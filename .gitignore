@@ -1,0 +1,29 @@
+ Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.env
+
+# Spark
+spark-warehouse/
+metastore_db/
+derby.log
+
+# Delta Lake
+_delta_log/
+
+# Docker volumes
+data/
+logs/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Checkpoints
+checkpoints/
