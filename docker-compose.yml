@@ -1,0 +1,80 @@
+version: '3.8'
+
+services:
+  # ─── KAFKA (Same as GhostKitchen — Kafka is cloud-agnostic) ────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    hostname: zookeeper
+    container_name: pt_zookeeper
+    ports:
+      - "2182:2181"   # Different port to avoid conflict with GhostKitchen!
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    hostname: kafka
+    container_name: pt_kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9093:9093"    # Different port!
+      - "29093:29093"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29093,PLAINTEXT_HOST://localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "kafka:29093", "--list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ─── SPARK (Same engine, different container names) ─────────────
+  spark-master:
+    image: bitnamilegacy/spark:3.5.3
+    container_name: pt_spark_master
+    ports:
+      - "8081:8080"    # Different port!
+    environment:
+      - SPARK_MODE=master
+      - SPARK_MASTER_HOST=spark-master
+
+  spark-worker:
+    image: bitnamilegacy/spark:3.5.3
+    container_name: pt_spark_worker
+    depends_on:
+      - spark-master
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=2G
+      - SPARK_WORKER_CORES=2
+
+  # ─── AZURITE (Azure Blob Storage Emulator — replaces MinIO) ────
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    container_name: pt_azurite
+    ports:
+      - "10000:10000"  # Blob service
+      - "10001:10001"  # Queue service  
+      - "10002:10002"  # Table service
+    command: "azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0"
+    volumes:
+      - azurite_data:/data
+
+volumes:
+  azurite_data:
