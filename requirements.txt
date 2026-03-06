@@ -1,2 +1,7 @@
+delta-spark==3.0.0
 Faker==40.8.0
+importlib_metadata==8.7.1
 kafka-python==2.3.0
+py4j==0.10.9.7
+pyspark==3.5.3
+zipp==3.23.0
