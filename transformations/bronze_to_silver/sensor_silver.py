@@ -85,7 +85,8 @@ def add_quality_flags(df: DataFrame) -> DataFrame:
         ).otherwise(valid_expr)
 
     return df.withColumn(
-        "is_valid", valid_expr
+        "is_valid", F.when(F.col("metric_value").isNull(), F.lit(False))
+         .otherwise(valid_expr)
     ).withColumn(
         # Late arriving: sync_timestamp > event_timestamp + 2 hours
         "is_late_arriving",
