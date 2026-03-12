@@ -163,6 +163,13 @@ metric_value         DOUBLE
 is_valid             BOOLEAN   within expected range for this metric
 is_late_arriving     BOOLEAN   sync_timestamp > event_timestamp + 2 hours
 ```
+```
+✅ silver/sensor_readings     9,061 rows  (metric explosion)
+✅ silver/ehr_conditions         908 rows  (SCD1)
+✅ silver/ehr_medications         680 rows  (SCD2)
+✅ silver/ehr_lab_results         431 rows  (append-only)
+✅ silver/identity/patient_identity_bridge  1,159 rows
+```
 
 ### Gold
 Snowflake schema. Optimized for analytical queries and dashboards. (Week 3)
