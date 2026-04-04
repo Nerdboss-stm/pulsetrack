@@ -16,6 +16,15 @@ class Settings(BaseSettings):
     kafka_topic_sensor: str = "sensor_readings"
     kafka_topic_pharmacy: str = "pharmacy_events"
 
+    # ── API endpoints ───────────────────────────────────────────────────
+    openfda_base_url: str = "https://api.fda.gov"
+    hapi_fhir_base_url: str = "https://hapi.fhir.org/baseR4"
+
+    # ── Streaming tunables ──────────────────────────────────────────────
+    trigger_interval: str = "30 seconds"
+    max_offsets_per_trigger: int = 10000
+    watermark_delay: str = "10 minutes"
+
     # ── Bronze paths ────────────────────────────────────────────────────
     @property
     def bronze_sensor(self) -> str:
