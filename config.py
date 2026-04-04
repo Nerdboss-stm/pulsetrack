@@ -1,20 +1,23 @@
 """
 PulseTrack — Centralized configuration via pydantic-settings.
 
-All paths and tunables live here. Override any field by setting
+All paths, endpoints, and tunables live here. Override any field by setting
 PT_<FIELD>=value as an environment variable, or by creating a .env file.
+Source modules import `settings` and reference attributes — no hardcoded paths.
 """
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    lakehouse_base: str = "/tmp/pulsetrack-lakehouse"
-
     # ── Kafka ───────────────────────────────────────────────────────────
     kafka_bootstrap: str = "localhost:9093"
     schema_registry_url: str = "http://localhost:8081"
     kafka_topic_sensor: str = "sensor_readings"
     kafka_topic_pharmacy: str = "pharmacy_events"
+
+    # ── Lakehouse base paths ────────────────────────────────────────────
+    lakehouse_base: str = "/tmp/pulsetrack-lakehouse"
+    ehr_batch_dir: str = "data/ehr_batches"
 
     # ── API endpoints ───────────────────────────────────────────────────
     openfda_base_url: str = "https://api.fda.gov"
@@ -122,6 +125,27 @@ class Settings(BaseSettings):
     @property
     def gold_dim_drug_class(self) -> str:
         return f"{self.lakehouse_base}/gold/dim_drug_class"
+
+    # ── Operational paths ───────────────────────────────────────────────
+    @property
+    def quarantine(self) -> str:
+        return f"{self.lakehouse_base}/quarantine"
+
+    @property
+    def dlq(self) -> str:
+        return f"{self.lakehouse_base}/dlq"
+
+    @property
+    def checkpoint_base(self) -> str:
+        return f"{self.lakehouse_base}/checkpoints"
+
+    @property
+    def checkpoint_bronze_sensor(self) -> str:
+        return f"{self.checkpoint_base}/bronze_sensors"
+
+    @property
+    def checkpoint_bronze_pharmacy(self) -> str:
+        return f"{self.checkpoint_base}/bronze_pharmacy"
 
     model_config = SettingsConfigDict(
         env_prefix="PT_",
