@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     max_offsets_per_trigger: int = 10000
     watermark_delay: str = "10 minutes"
 
+    # ── Quality thresholds ──────────────────────────────────────────────
+    late_arrival_threshold_seconds: int = 7200
+
+    # ── Generator tunables ──────────────────────────────────────────────
+    wearable_events_per_second: int = 10
+    pharmacy_changes_per_minute: int = 5
+
     # ── Bronze paths ────────────────────────────────────────────────────
     @property
     def bronze_sensor(self) -> str:
