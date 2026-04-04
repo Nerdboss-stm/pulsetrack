@@ -10,6 +10,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     lakehouse_base: str = "/tmp/pulsetrack-lakehouse"
 
+    # ── Kafka ───────────────────────────────────────────────────────────
+    kafka_bootstrap: str = "localhost:9093"
+    schema_registry_url: str = "http://localhost:8081"
+    kafka_topic_sensor: str = "sensor_readings"
+    kafka_topic_pharmacy: str = "pharmacy_events"
+
     # ── Bronze paths ────────────────────────────────────────────────────
     @property
     def bronze_sensor(self) -> str:
