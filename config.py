@@ -8,7 +8,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    # Lakehouse base path — every Bronze/Silver/Gold table is computed off this.
     lakehouse_base: str = "/tmp/pulsetrack-lakehouse"
 
     # ── Bronze paths ────────────────────────────────────────────────────
@@ -48,6 +47,59 @@ class Settings(BaseSettings):
     @property
     def silver_identity_bridge(self) -> str:
         return f"{self.lakehouse_base}/silver/identity/patient_identity_bridge"
+
+    # ── Gold paths ──────────────────────────────────────────────────────
+    @property
+    def gold_base(self) -> str:
+        return f"{self.lakehouse_base}/gold"
+
+    @property
+    def gold_fact_vital_daily(self) -> str:
+        return f"{self.lakehouse_base}/gold/fact_vital_daily_summary"
+
+    @property
+    def gold_fact_vital_reading(self) -> str:
+        return f"{self.lakehouse_base}/gold/fact_vital_reading"
+
+    @property
+    def gold_fact_lab_result(self) -> str:
+        return f"{self.lakehouse_base}/gold/fact_lab_result"
+
+    @property
+    def gold_dim_patient(self) -> str:
+        return f"{self.lakehouse_base}/gold/dim_patient"
+
+    @property
+    def gold_dim_device(self) -> str:
+        return f"{self.lakehouse_base}/gold/dim_device"
+
+    @property
+    def gold_dim_metric(self) -> str:
+        return f"{self.lakehouse_base}/gold/dim_metric"
+
+    @property
+    def gold_dim_date(self) -> str:
+        return f"{self.lakehouse_base}/gold/dim_date"
+
+    @property
+    def gold_dim_time(self) -> str:
+        return f"{self.lakehouse_base}/gold/dim_time"
+
+    @property
+    def gold_dim_condition(self) -> str:
+        return f"{self.lakehouse_base}/gold/dim_condition"
+
+    @property
+    def gold_dim_condition_category(self) -> str:
+        return f"{self.lakehouse_base}/gold/dim_condition_category"
+
+    @property
+    def gold_dim_medication(self) -> str:
+        return f"{self.lakehouse_base}/gold/dim_medication"
+
+    @property
+    def gold_dim_drug_class(self) -> str:
+        return f"{self.lakehouse_base}/gold/dim_drug_class"
 
     model_config = SettingsConfigDict(
         env_prefix="PT_",
