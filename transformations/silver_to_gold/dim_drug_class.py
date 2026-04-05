@@ -1,10 +1,13 @@
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from config import settings  # noqa: E402
+from logger import get_logger  # noqa: E402
+
+log = get_logger(__name__)
 
 from pyspark.sql import functions as F
 from streaming.spark_config import get_spark_session
 
-GOLD_BASE = "/tmp/pulsetrack-lakehouse/gold"
 
 # Drug classes from ehr_generator.py MEDICATIONS.
 # Snowflake parent table — dim_medication FKs here.
@@ -29,8 +32,8 @@ def main():
         .select("drug_class_key", "class_name", "drug_family")
     )
 
-    df.write.format("delta").mode("overwrite").save(f"{GOLD_BASE}/dim_drug_class")
-    print(f"✅ dim_drug_class rows written: {df.count()} rows")
+    df.write.format("delta").mode("overwrite").save(settings.gold_dim_drug_class)
+    log.info(f"✅ dim_drug_class rows written: {df.count()} rows")
     df.printSchema()
 
 

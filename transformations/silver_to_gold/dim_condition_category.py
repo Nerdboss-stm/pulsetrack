@@ -1,10 +1,13 @@
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from config import settings  # noqa: E402
+from logger import get_logger  # noqa: E402
+
+log = get_logger(__name__)
 
 from pyspark.sql import functions as F
 from streaming.spark_config import get_spark_session
 
-GOLD_BASE = "/tmp/pulsetrack-lakehouse/gold"
 
 # ICD-10 chapters for the categories present in PulseTrack EHR data.
 # Source: ehr_generator.py ICD10_CONDITIONS categories.
@@ -31,8 +34,8 @@ def main():
         .select("condition_category_key", "category_code", "category_name", "icd_chapter")
     )
 
-    df.write.format("delta").mode("overwrite").save(f"{GOLD_BASE}/dim_condition_category")
-    print(f"✅ dim_condition_category rows written: {df.count()} rows")
+    df.write.format("delta").mode("overwrite").save(settings.gold_dim_condition_category)
+    log.info(f"✅ dim_condition_category rows written: {df.count()} rows")
     df.printSchema()
 
 

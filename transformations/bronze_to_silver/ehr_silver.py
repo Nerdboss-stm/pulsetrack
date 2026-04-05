@@ -1,13 +1,15 @@
 import sys, os, json, glob
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from config import settings  # noqa: E402
+from logger import get_logger  # noqa: E402
+
+log = get_logger(__name__)
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import *
 from delta.tables import DeltaTable
 
-EHR_BATCH_DIR = "data/ehr_batches"
-SILVER_BASE   = "/tmp/pulsetrack-lakehouse/silver"
 
 
 def load_all_batches(spark: SparkSession) -> list[dict]:
@@ -16,14 +18,14 @@ def load_all_batches(spark: SparkSession) -> list[dict]:
     Returns flat list of (patient_bundle, batch_date) dicts.
     """
     records = []
-    for batch_file in glob.glob(f"{EHR_BATCH_DIR}/*/ehr_batch.json"):
+    for batch_file in glob.glob(f"{settings.ehr_batch_dir}/*/ehr_batch.json"):
         batch_date = batch_file.split("/")[-2]
         with open(batch_file) as f:
             data = json.load(f)
         for patient in data["patients"]:
             patient["batch_date"] = batch_date
             records.append(patient)
-    print(f"  Loaded {len(records)} patient bundles across all batch files")
+    log.info(f"  Loaded {len(records)} patient bundles across all batch files")
     return records
 
 
@@ -195,10 +197,10 @@ def build_labs_df(spark: SparkSession, records: list[dict]) -> DataFrame:
 
 
 def load_conditions(df: DataFrame, spark: SparkSession):
-    path = f"{SILVER_BASE}/ehr_conditions"
+    path = settings.silver_ehr_conditions
     if not DeltaTable.isDeltaTable(spark, path):
         df.write.format("delta").save(path)
-        print(f"  ehr_conditions created: {df.count()} rows")
+        log.info(f"  ehr_conditions created: {df.count()} rows")
         return
 
     # SCD1 for conditions — status can change (active→resolved), just update in place
@@ -209,7 +211,7 @@ def load_conditions(df: DataFrame, spark: SparkSession):
     ).whenMatchedUpdateAll() \
      .whenNotMatchedInsertAll() \
      .execute()
-    print("  ehr_conditions merged")
+    log.info("  ehr_conditions merged")
 
 
 def load_medications(df: DataFrame, spark: SparkSession):
@@ -218,11 +220,11 @@ def load_medications(df: DataFrame, spark: SparkSession):
     Match key: patient_id + medication
     Change detected via row_hash (status + dosage + frequency)
     """
-    path = f"{SILVER_BASE}/ehr_medications"
+    path = settings.silver_ehr_medications
 
     if not DeltaTable.isDeltaTable(spark, path):
         df.write.format("delta").save(path)
-        print(f"  ehr_medications created: {df.count()} rows")
+        log.info(f"  ehr_medications created: {df.count()} rows")
         return
 
     # Step 1 — expire current records where hash changed
@@ -251,14 +253,14 @@ def load_medications(df: DataFrame, spark: SparkSession):
         how="left_anti"
     )
     new_records.write.format("delta").mode("append").save(path)
-    print("  ehr_medications updated (SCD2)")
+    log.info("  ehr_medications updated (SCD2)")
 
 
 def load_labs(df: DataFrame, spark: SparkSession):
-    path = f"{SILVER_BASE}/ehr_lab_results"
+    path = settings.silver_ehr_lab_results
     if not DeltaTable.isDeltaTable(spark, path):
         df.write.format("delta").save(path)
-        print(f"  ehr_lab_results created: {df.count()} rows")
+        log.info(f"  ehr_lab_results created: {df.count()} rows")
         return
 
     # Append-only — insert new observations only
@@ -266,7 +268,7 @@ def load_labs(df: DataFrame, spark: SparkSession):
         df.alias("new"),
         "existing.observation_id = new.observation_id"
     ).whenNotMatchedInsertAll().execute()
-    print("  ehr_lab_results merged")
+    log.info("  ehr_lab_results merged")
 
 
 def run_ehr_silver(spark: SparkSession):
@@ -276,21 +278,21 @@ def run_ehr_silver(spark: SparkSession):
     medications_df = build_medications_df(spark, records)
     labs_df        = build_labs_df(spark, records)
 
-    print("\nLoading Silver tables...")
+    log.info("\nLoading Silver tables...")
     load_conditions(conditions_df, spark)
     load_medications(medications_df, spark)
     load_labs(labs_df, spark)
 
-    print("\n=== Row counts ===")
+    log.info("\n=== Row counts ===")
     for name, path in [
-        ("ehr_conditions",  f"{SILVER_BASE}/ehr_conditions"),
-        ("ehr_medications", f"{SILVER_BASE}/ehr_medications"),
-        ("ehr_lab_results", f"{SILVER_BASE}/ehr_lab_results"),
+        ("ehr_conditions",  settings.silver_ehr_conditions),
+        ("ehr_medications", settings.silver_ehr_medications),
+        ("ehr_lab_results", settings.silver_ehr_lab_results),
     ]:
         count = spark.read.format("delta").load(path).count()
-        print(f"  {name}: {count}")
+        log.info(f"  {name}: {count}")
 
-    print("\n✅ EHR Silver complete")
+    log.info("\n✅ EHR Silver complete")
 
 
 if __name__ == "__main__":

@@ -19,27 +19,29 @@ from pyspark.sql import functions as F
 from pyspark.sql.types import StringType
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from config import settings  # noqa: E402
+from logger import get_logger  # noqa: E402
+
+log = get_logger(__name__)
 from streaming.spark_config import get_spark_session
 
 
 # Use local filesystem for Bronze (simpler for learning)
 # In production Azure: "wasbs://container@account.blob.core.windows.net/bronze/..."
-BRONZE_PATH = "/tmp/pulsetrack-lakehouse/bronze/sensor_readings"
-CHECKPOINT_PATH = "/tmp/pulsetrack-lakehouse/checkpoints/bronze_sensors"
 
 
 def run_wearable_bronze():
-    print("💜 PulseTrack Wearable → Bronze ingestion starting...")
-    print(f"   Source: Kafka topic 'sensor_readings' on localhost:9093")
-    print(f"   Sink: {BRONZE_PATH}")
+    log.info("💜 PulseTrack Wearable → Bronze ingestion starting...")
+    log.info(f"   Source: Kafka topic 'sensor_readings' on localhost:9093")
+    log.info(f"   Sink: {settings.bronze_sensor}")
     
     spark = get_spark_session("PulseTrack-Bronze-Wearables")
     
     kafka_df = (
         spark.readStream
         .format("kafka")
-        .option("kafka.bootstrap.servers", "localhost:9093")  # PulseTrack Kafka!
-        .option("subscribe", "sensor_readings")
+        .option("kafka.bootstrap.servers", settings.kafka_bootstrap)  # PulseTrack Kafka!
+        .option("subscribe", settings.kafka_topic_sensor)
         .option("startingOffsets", "earliest")
         .option("failOnDataLoss", "false")
         .load()
@@ -62,20 +64,20 @@ def run_wearable_bronze():
         bronze_df.writeStream
         .format("delta")
         .outputMode("append")
-        .option("checkpointLocation", CHECKPOINT_PATH)
-        .trigger(processingTime="30 seconds")
+        .option("checkpointLocation", settings.checkpoint_bronze_sensor)
+        .trigger(processingTime=settings.trigger_interval)
         .partitionBy("ingestion_date", "ingestion_hour")
-        .start(BRONZE_PATH)
+        .start(settings.bronze_sensor)
     )
     
-    print("✅ PulseTrack Bronze running!")
+    log.info("✅ PulseTrack Bronze running!")
     
     try:
         query.awaitTermination()
     except KeyboardInterrupt:
         query.stop()
         spark.stop()
-        print("Stopped.")
+        log.info("Stopped.")
 
 if __name__ == "__main__":
     run_wearable_bronze()

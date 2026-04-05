@@ -15,6 +15,10 @@ directly from the raw EHR batch files so the table is always populated.
 """
 import sys, os, json, glob
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from config import settings  # noqa: E402
+from logger import get_logger  # noqa: E402
+
+log = get_logger(__name__)
 
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
@@ -24,9 +28,6 @@ from delta.tables import DeltaTable
 from streaming.spark_config import get_spark_session
 from datetime import datetime
 
-GOLD_BASE     = "/tmp/pulsetrack-lakehouse/gold"
-SILVER_BASE   = "/tmp/pulsetrack-lakehouse/silver"
-BRIDGE_PATH   = f"{SILVER_BASE}/identity/patient_identity_bridge"
 EHR_BATCH_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'ehr_batches')
 
 
@@ -73,11 +74,11 @@ def main():
     spark = get_spark_session("GoldDimPatient")
 
     demo_df = load_ehr_demographics(spark)
-    print(f"  EHR demographics loaded: {demo_df.count()} patients")
+    log.info(f"  EHR demographics loaded: {demo_df.count()} patients")
 
     # ── Fallback: no Silver bridge yet ─────────────────────────────────
-    if not DeltaTable.isDeltaTable(spark, BRIDGE_PATH):
-        print("  WARNING: Identity bridge not found — building from EHR batch files only.")
+    if not DeltaTable.isDeltaTable(spark, settings.silver_identity_bridge):
+        log.info("  WARNING: Identity bridge not found — building from EHR batch files only.")
         df = (
             demo_df
             .withColumn("patient_key",
@@ -92,13 +93,13 @@ def main():
                     "primary_condition_key", "device_count", "first_reading_date")
             .dropDuplicates(["patient_key"])
         )
-        df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(f"{GOLD_BASE}/dim_patient")
-        print(f"✅ dim_patient rows written: {df.count()} rows (seeded from EHR batch files)")
+        df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(settings.gold_dim_patient)
+        log.info(f"✅ dim_patient rows written: {df.count()} rows (seeded from EHR batch files)")
         df.printSchema()
         return
 
     # ── Full build from Silver ──────────────────────────────────────────
-    bridge = spark.read.format("delta").load(BRIDGE_PATH)
+    bridge = spark.read.format("delta").load(settings.silver_identity_bridge)
 
     mrn_rows = (
         bridge.filter(F.col("identifier_type") == "hospital_mrn")
@@ -120,9 +121,9 @@ def main():
     )
 
     # ── Primary condition (first active ICD-10 per patient) ─────────────
-    if DeltaTable.isDeltaTable(spark, f"{SILVER_BASE}/ehr_conditions"):
-        conds_silver = spark.read.format("delta").load(f"{SILVER_BASE}/ehr_conditions")
-        dim_cond     = spark.read.format("delta").load(f"{GOLD_BASE}/dim_condition")
+    if DeltaTable.isDeltaTable(spark, settings.silver_ehr_conditions):
+        conds_silver = spark.read.format("delta").load(settings.silver_ehr_conditions)
+        dim_cond     = spark.read.format("delta").load(settings.gold_dim_condition)
 
         cond_lookup = dim_cond.select(
             F.col("condition_key"),
@@ -140,8 +141,8 @@ def main():
         patients = patients.withColumn("primary_condition_key", F.lit(None).cast(LongType()))
 
     # ── Device count + first reading date (via bridge) ──────────────────
-    if DeltaTable.isDeltaTable(spark, f"{SILVER_BASE}/sensor_readings"):
-        sensors = spark.read.format("delta").load(f"{SILVER_BASE}/sensor_readings")
+    if DeltaTable.isDeltaTable(spark, settings.silver_sensor):
+        sensors = spark.read.format("delta").load(settings.silver_sensor)
 
         device_bridge = (
             bridge
@@ -180,8 +181,8 @@ def main():
         .dropDuplicates(["patient_key"])
     )
 
-    df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(f"{GOLD_BASE}/dim_patient")
-    print(f"✅ dim_patient rows written: {df.count()} rows")
+    df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(settings.gold_dim_patient)
+    log.info(f"✅ dim_patient rows written: {df.count()} rows")
     df.printSchema()
 
 

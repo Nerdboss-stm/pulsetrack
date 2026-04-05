@@ -15,6 +15,10 @@ condition_key:
 """
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from config import settings  # noqa: E402
+from logger import get_logger  # noqa: E402
+
+log = get_logger(__name__)
 
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
@@ -23,10 +27,6 @@ from pyspark.sql.types import (
 from delta.tables import DeltaTable
 from streaming.spark_config import get_spark_session
 
-GOLD_BASE        = "/tmp/pulsetrack-lakehouse/gold"
-SILVER_BASE      = "/tmp/pulsetrack-lakehouse/silver"
-SILVER_LABS_PATH = f"{SILVER_BASE}/ehr_lab_results"
-BRIDGE_PATH      = f"{SILVER_BASE}/identity/patient_identity_bridge"
 
 # Clinical linkage: lab test code → ICD-10 condition code
 LAB_TO_CONDITION = [
@@ -51,20 +51,20 @@ _EMPTY_SCHEMA = StructType([
 def main():
     spark = get_spark_session("GoldFactLabResult")
 
-    if not DeltaTable.isDeltaTable(spark, SILVER_LABS_PATH):
-        print("  WARNING: Silver ehr_lab_results not found — writing empty fact table.")
+    if not DeltaTable.isDeltaTable(spark, settings.silver_ehr_lab_results):
+        log.info("  WARNING: Silver ehr_lab_results not found — writing empty fact table.")
         df = spark.createDataFrame([], _EMPTY_SCHEMA)
-        df.write.format("delta").mode("overwrite").save(f"{GOLD_BASE}/fact_lab_result")
-        print("✅ fact_lab_result rows written: 0 rows (Silver not yet populated)")
+        df.write.format("delta").mode("overwrite").save(settings.gold_fact_lab_result)
+        log.info("✅ fact_lab_result rows written: 0 rows (Silver not yet populated)")
         df.printSchema()
         return
 
-    labs          = spark.read.format("delta").load(SILVER_LABS_PATH)
-    dim_condition = spark.read.format("delta").load(f"{GOLD_BASE}/dim_condition")
+    labs          = spark.read.format("delta").load(settings.silver_ehr_lab_results)
+    dim_condition = spark.read.format("delta").load(settings.gold_dim_condition)
 
     # ── Patient key via identity bridge ────────────────────────────────
-    if DeltaTable.isDeltaTable(spark, BRIDGE_PATH):
-        bridge = spark.read.format("delta").load(BRIDGE_PATH)
+    if DeltaTable.isDeltaTable(spark, settings.silver_identity_bridge):
+        bridge = spark.read.format("delta").load(settings.silver_identity_bridge)
         mrn_to_patient = (
             bridge
             .filter(F.col("identifier_type") == "hospital_mrn")
@@ -128,8 +128,8 @@ def main():
         .dropDuplicates(["patient_key", "date_key", "lab_test_name"])
     )
 
-    df.write.format("delta").mode("overwrite").save(f"{GOLD_BASE}/fact_lab_result")
-    print(f"✅ fact_lab_result rows written: {df.count()} rows")
+    df.write.format("delta").mode("overwrite").save(settings.gold_fact_lab_result)
+    log.info(f"✅ fact_lab_result rows written: {df.count()} rows")
     df.printSchema()
 
 

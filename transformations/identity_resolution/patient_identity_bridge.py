@@ -1,13 +1,15 @@
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from config import settings  # noqa: E402
+from logger import get_logger  # noqa: E402
+
+log = get_logger(__name__)
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import *
 from delta.tables import DeltaTable
 
-SILVER_BASE = "/tmp/pulsetrack-lakehouse/silver"
-BRIDGE_PATH = f"{SILVER_BASE}/identity/patient_identity_bridge"
 
 
 def build_ehr_identities(spark: SparkSession) -> DataFrame:
@@ -18,12 +20,12 @@ def build_ehr_identities(spark: SparkSession) -> DataFrame:
     (a patient might appear in one but not the other).
     """
     conditions = spark.read.format("delta") \
-        .load(f"{SILVER_BASE}/ehr_conditions") \
+        .load(settings.silver_ehr_conditions) \
         .select("patient_id", "patient_email") \
         .filter(F.col("patient_id").isNotNull())
 
     medications = spark.read.format("delta") \
-        .load(f"{SILVER_BASE}/ehr_medications") \
+        .load(settings.silver_ehr_medications) \
         .select("patient_id", "patient_email") \
         .filter(F.col("patient_id").isNotNull())
 
@@ -73,7 +75,7 @@ def build_device_bridge_rows(spark: SparkSession) -> DataFrame:
     link_status = pending_registration signals this explicitly.
     """
     sensors = spark.read.format("delta") \
-        .load(f"{SILVER_BASE}/sensor_readings") \
+        .load(settings.silver_sensor) \
         .select("device_account_id") \
         .filter(F.col("device_account_id").isNotNull()) \
         .dropDuplicates(["device_account_id"])
@@ -93,12 +95,12 @@ def load_bridge(bridge_df: DataFrame, spark: SparkSession):
         .withColumn("first_seen", F.current_timestamp()) \
         .withColumn("last_seen",  F.current_timestamp())
 
-    if not DeltaTable.isDeltaTable(spark, BRIDGE_PATH):
-        bridge_df.write.format("delta").save(BRIDGE_PATH)
-        print(f"  patient_identity_bridge created: {bridge_df.count()} rows")
+    if not DeltaTable.isDeltaTable(spark, settings.silver_identity_bridge):
+        bridge_df.write.format("delta").save(settings.silver_identity_bridge)
+        log.info(f"  patient_identity_bridge created: {bridge_df.count()} rows")
         return
 
-    DeltaTable.forPath(spark, BRIDGE_PATH).alias("bridge").merge(
+    DeltaTable.forPath(spark, settings.silver_identity_bridge).alias("bridge").merge(
         bridge_df.alias("new"),
         """bridge.identifier_type  = new.identifier_type
            AND bridge.identifier_value = new.identifier_value"""
@@ -107,34 +109,34 @@ def load_bridge(bridge_df: DataFrame, spark: SparkSession):
         "link_status":  "new.link_status",
         "patient_key":  "new.patient_key",
     }).whenNotMatchedInsertAll().execute()
-    print("  patient_identity_bridge merged")
+    log.info("  patient_identity_bridge merged")
 
 
 def run_identity_bridge(spark: SparkSession):
-    print("Building EHR identities...")
+    log.info("Building EHR identities...")
     ehr_df = build_ehr_identities(spark)
-    print(f"  Unique EHR patients: {ehr_df.count()}")
+    log.info(f"  Unique EHR patients: {ehr_df.count()}")
 
     ehr_bridge    = build_ehr_bridge_rows(ehr_df)
     device_bridge = build_device_bridge_rows(spark)
 
     bridge_df = ehr_bridge.union(device_bridge)
 
-    print("\nLoading bridge...")
+    log.info("\nLoading bridge...")
     load_bridge(bridge_df, spark)
 
-    print("\n=== Bridge breakdown ===")
-    final = spark.read.format("delta").load(BRIDGE_PATH)
+    log.info("\n=== Bridge breakdown ===")
+    final = spark.read.format("delta").load(settings.silver_identity_bridge)
     final.groupBy("identifier_type", "link_status").count() \
          .orderBy("identifier_type").show()
 
     linked = final.filter(F.col("link_status") == "linked") \
                   .select("patient_key").distinct().count()
     pending = final.filter(F.col("link_status") == "pending_registration").count()
-    print(f"  Fully linked patients: {linked}")
-    print(f"  Pending device accounts: {pending}")
+    log.info(f"  Fully linked patients: {linked}")
+    log.info(f"  Pending device accounts: {pending}")
 
-    print("\n✅ Identity bridge complete")
+    log.info("\n✅ Identity bridge complete")
 
 
 if __name__ == "__main__":

@@ -1,13 +1,15 @@
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from config import settings  # noqa: E402
+from logger import get_logger  # noqa: E402
+
+log = get_logger(__name__)
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import *
 from delta.tables import DeltaTable
 
-BRONZE_PATH = "/tmp/pulsetrack-lakehouse/bronze/sensor_readings"
-SILVER_PATH = "/tmp/pulsetrack-lakehouse/silver/sensor_readings"
 
 # Valid ranges per metric — used for is_valid flag
 METRIC_RANGES = {
@@ -109,22 +111,22 @@ def deduplicate(df: DataFrame) -> DataFrame:
 
 
 def run_sensor_silver(spark: SparkSession):
-    bronze_df = spark.read.format("delta").load(BRONZE_PATH)
-    print(f"Bronze rows: {bronze_df.count()}")
+    bronze_df = spark.read.format("delta").load(settings.bronze_sensor)
+    log.info(f"Bronze rows: {bronze_df.count()}")
 
     parsed_df   = parse_and_explode(bronze_df)
     flagged_df  = add_quality_flags(parsed_df)
     deduped_df  = deduplicate(flagged_df)
 
-    print(f"Silver rows after explosion + dedup: {deduped_df.count()}")
+    log.info(f"Silver rows after explosion + dedup: {deduped_df.count()}")
 
     deduped_df.write \
         .format("delta") \
         .mode("overwrite") \
         .option("mergeSchema", "true") \
-        .save(SILVER_PATH)
+        .save(settings.silver_sensor)
 
-    print("✅ Sensor silver written")
+    log.info("✅ Sensor silver written")
 
 
 if __name__ == "__main__":
