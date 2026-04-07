@@ -1,13 +1,14 @@
-import sys, os
+import os
+import sys
+
+from pyspark.sql import functions as F
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from config import settings  # noqa: E402
 from logger import get_logger  # noqa: E402
+from streaming.spark_config import get_spark_session  # noqa: E402
 
 log = get_logger(__name__)
-
-from pyspark.sql import functions as F
-from streaming.spark_config import get_spark_session
-
 
 
 def main():
@@ -42,8 +43,10 @@ def main():
     )
 
     df.write.format("delta").mode("overwrite").save(settings.gold_dim_time)
-    log.info(f"✅ dim_time rows written: {df.count()} rows")
-    df.printSchema()
+    log.info(
+        "dim_time written",
+        extra={"extra_data": {"row_count": df.count(), "path": settings.gold_dim_time}},
+    )
 
 
 if __name__ == "__main__":
