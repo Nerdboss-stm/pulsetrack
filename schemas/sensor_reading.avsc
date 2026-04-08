@@ -1,0 +1,28 @@
+{
+  "type": "record",
+  "name": "SensorReading",
+  "namespace": "com.pulsetrack",
+  "fields": [
+    {"name": "reading_id", "type": "string"},
+    {"name": "device_id", "type": "string"},
+    {
+      "name": "device_type",
+      "type": {
+        "type": "enum",
+        "name": "DeviceType",
+        "symbols": ["smartwatch", "chest_strap", "sleep_ring", "blood_pressure_cuff"]
+      }
+    },
+    {"name": "user_device_account_id", "type": "string"},
+    {"name": "patient_email", "type": ["null", "string"], "default": null},
+    {
+      "name": "metrics",
+      "type": {"type": "map", "values": ["null", "double"]},
+      "doc": "Metric name → value"
+    },
+    {"name": "firmware_version", "type": "string"},
+    {"name": "battery_pct", "type": "int"},
+    {"name": "event_timestamp", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "sync_timestamp", "type": {"type": "long", "logicalType": "timestamp-millis"}}
+  ]
+}
