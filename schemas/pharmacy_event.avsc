@@ -1,0 +1,29 @@
+{
+  "type": "record",
+  "name": "PharmacyEvent",
+  "namespace": "com.pulsetrack",
+  "fields": [
+    {"name": "event_id", "type": "string"},
+    {
+      "name": "event_type",
+      "type": {
+        "type": "enum",
+        "name": "PharmacyEventType",
+        "symbols": ["new_fill", "refill", "cancellation", "adverse_event"]
+      }
+    },
+    {"name": "patient_id", "type": "string"},
+    {"name": "drug_name", "type": "string"},
+    {"name": "ndc_code", "type": ["null", "string"], "default": null},
+    {"name": "prescriber_npi", "type": ["null", "string"], "default": null},
+    {"name": "fill_date", "type": {"type": "int", "logicalType": "date"}},
+    {"name": "quantity", "type": "int"},
+    {
+      "name": "fda_report_id",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Open FDA adverse event report ID if applicable"
+    },
+    {"name": "event_timestamp", "type": {"type": "long", "logicalType": "timestamp-millis"}}
+  ]
+}
