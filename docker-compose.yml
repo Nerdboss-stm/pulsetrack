@@ -1,21 +1,26 @@
 version: '3.8'
 
 services:
-  # ─── KAFKA (Same as GhostKitchen — Kafka is cloud-agnostic) ────
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     hostname: zookeeper
     container_name: pt_zookeeper
     ports:
-      - "2182:2181"   # Different port to avoid conflict with GhostKitchen!
+      - "2182:2181"
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep -q imok"]
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 0.5
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_log:/var/lib/zookeeper/log
 
   kafka:
     image: confluentinc/cp-kafka:7.5.0
@@ -25,7 +30,7 @@ services:
       zookeeper:
         condition: service_healthy
     ports:
-      - "9093:9093"    # Different port!
+      - "9093:9093"
       - "29093:29093"
     environment:
       KAFKA_BROKER_ID: 1
@@ -42,13 +47,17 @@ services:
       interval: 15s
       timeout: 10s
       retries: 5
+    restart: unless-stopped
+    mem_limit: 2g
+    cpus: 1.0
+    volumes:
+      - kafka_data:/var/lib/kafka/data
 
-  # ─── SPARK (Same engine, different container names) ─────────────
   spark-master:
     image: bitnamilegacy/spark:3.5.3
     container_name: pt_spark_master
     ports:
-      - "8081:8080"    # Different port!
+      - "8081:8080"
     environment:
       - SPARK_MODE=master
       - SPARK_MASTER_HOST=spark-master
@@ -64,17 +73,19 @@ services:
       - SPARK_WORKER_MEMORY=2G
       - SPARK_WORKER_CORES=2
 
-  # ─── AZURITE (Azure Blob Storage Emulator — replaces MinIO) ────
   azurite:
     image: mcr.microsoft.com/azure-storage/azurite:latest
     container_name: pt_azurite
     ports:
-      - "10000:10000"  # Blob service
-      - "10001:10001"  # Queue service  
-      - "10002:10002"  # Table service
+      - "10000:10000"
+      - "10001:10001"
+      - "10002:10002"
     command: "azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0"
     volumes:
       - azurite_data:/data
 
 volumes:
+  zookeeper_data:
+  zookeeper_log:
+  kafka_data:
   azurite_data:
