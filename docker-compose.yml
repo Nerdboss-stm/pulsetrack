@@ -79,10 +79,19 @@ services:
     image: bitnamilegacy/spark:3.5.3
     container_name: pt_spark_master
     ports:
-      - "8081:8080"
+      - "8085:8080"   # Master UI (8081 is reserved for Schema Registry)
+      - "7077:7077"   # Cluster comms
     environment:
       - SPARK_MODE=master
       - SPARK_MASTER_HOST=spark-master
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+    mem_limit: 2g
+    cpus: 1.0
 
   spark-worker:
     image: bitnamilegacy/spark:3.5.3
