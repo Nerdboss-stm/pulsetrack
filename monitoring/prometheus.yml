@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "pulsetrack"
+    static_configs:
+      - targets: ["host.docker.internal:8000"]   # metrics.py exporter on host
+        labels:
+          service: pulsetrack
