@@ -132,7 +132,27 @@ services:
     volumes:
       - azurite_data:/data
 
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: pt_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 0.5
+
 volumes:
+  prometheus_data:
   zookeeper_data:
   zookeeper_log:
   kafka_data:
