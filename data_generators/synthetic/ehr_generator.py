@@ -17,13 +17,20 @@ Real hospitals export data in this format.
 PDF: System Design pages 57-63 (orchestration for batch sources)
 """
 
-import json, os, random
+import json
+import os
+import random
+import sys
 from datetime import datetime, timedelta
+
 from faker import Faker
 
-fake = Faker()
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from config import settings  # noqa: E402
+from logger import get_logger  # noqa: E402
 
-OUTPUT_DIR = "data/ehr_batches"
+log = get_logger(__name__)
+fake = Faker()
 
 ICD10_CONDITIONS = [
     {"code": "E11.9", "desc": "Type 2 diabetes without complications", "category": "Endocrine", "chronic": True},
@@ -56,18 +63,18 @@ LAB_TESTS = [
 def generate_patient_bundle(patient_mrn):
     """Generate a FHIR-like bundle for one patient."""
     entries = []
-    
+
     # 1-3 conditions per patient
     num_conditions = random.randint(1, 3)
     patient_conditions = random.sample(ICD10_CONDITIONS, num_conditions)
-    
+
     for cond in patient_conditions:
         onset_days_ago = random.randint(30, 2000)
         status = random.choices(
             ["active", "remission", "resolved"],
             weights=[0.7, 0.15, 0.15]
         )[0]
-        
+
         entries.append({
             "resource_type": "Condition",
             "code": cond["code"],
@@ -78,15 +85,15 @@ def generate_patient_bundle(patient_mrn):
             "status": status,
             "clinician_npi": f"NPI-{random.randint(1000000000, 9999999999)}",
         })
-    
+
     # 0-3 medications
     num_meds = random.randint(0, 3)
     patient_meds = random.sample(MEDICATIONS, min(num_meds, len(MEDICATIONS)))
-    
+
     for med in patient_meds:
         start_days_ago = random.randint(10, 1000)
         is_active = random.random() < 0.8
-        
+
         entries.append({
             "resource_type": "MedicationStatement",
             "medication": med["name"],
@@ -99,11 +106,11 @@ def generate_patient_bundle(patient_mrn):
             "status": "active" if is_active else "stopped",
             "prescriber_npi": f"NPI-{random.randint(1000000000, 9999999999)}",
         })
-    
+
     # 0-2 lab results
     num_labs = random.randint(0, 2)
     patient_labs = random.sample(LAB_TESTS, min(num_labs, len(LAB_TESTS)))
-    
+
     for lab in patient_labs:
         value = round(random.uniform(lab["normal_low"] * 0.7, lab["normal_high"] * 1.5), 1)
         entries.append({
@@ -116,7 +123,7 @@ def generate_patient_bundle(patient_mrn):
             "is_abnormal": value < lab["normal_low"] or value > lab["normal_high"],
             "date": (datetime.utcnow() - timedelta(days=random.randint(0, 90))).strftime("%Y-%m-%d"),
         })
-    
+
     return {
         "resource_type": "Bundle",
         "patient_id": patient_mrn,
@@ -133,34 +140,42 @@ def generate_daily_batch(date_str=None, num_patients=50):
     """Generate one day's EHR batch file."""
     if date_str is None:
         date_str = datetime.utcnow().strftime("%Y-%m-%d")
-    
-    batch_dir = os.path.join(OUTPUT_DIR, date_str)
+
+    batch_dir = os.path.join(settings.ehr_batch_dir, date_str)
     os.makedirs(batch_dir, exist_ok=True)
-    
+
     patients = []
     for i in range(num_patients):
         mrn = f"MRN-{random.randint(10000, 99999)}-HOSP-A"
         bundle = generate_patient_bundle(mrn)
         patients.append(bundle)
-    
+
     output_path = os.path.join(batch_dir, "ehr_batch.json")
     with open(output_path, 'w') as f:
         json.dump({"batch_date": date_str, "patient_count": len(patients), "patients": patients}, f, indent=2)
-    
-    print(f"  📋 Generated {len(patients)} patient records → {output_path}")
+
+    log.info(
+        "EHR batch generated",
+        extra={"extra_data": {"patients": len(patients), "path": output_path, "date": date_str}},
+    )
     return output_path
 
 
 def main():
-    print("🏥 EHR Batch Generator")
-    print("   Generating last 7 days of EHR data...")
-    
+    log.info(
+        "EHR batch generator starting",
+        extra={"extra_data": {"output_dir": settings.ehr_batch_dir, "days": 7}},
+    )
+
     for days_ago in range(7, -1, -1):
         date = (datetime.utcnow() - timedelta(days=days_ago)).strftime("%Y-%m-%d")
         generate_daily_batch(date, num_patients=random.randint(30, 70))
-    
-    print("\n✅ Done! Batch files in data/ehr_batches/")
-    print("   In production, Airflow would detect these files and trigger ingestion.")
+
+    log.info(
+        "EHR batch generation complete",
+        extra={"extra_data": {"output_dir": settings.ehr_batch_dir}},
+    )
+
 
 if __name__ == "__main__":
     main()
