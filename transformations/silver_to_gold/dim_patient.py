@@ -13,22 +13,29 @@ PII masking: patient_id (MRN) is sha256-hashed. Email is dropped entirely.
 Fallback: if Silver identity bridge does not exist yet, dim_patient is built
 directly from the raw EHR batch files so the table is always populated.
 """
-import sys, os, json, glob
+import glob
+import json
+import os
+import sys
+from datetime import datetime
+
+from delta.tables import DeltaTable
+from pyspark.sql import functions as F
+from pyspark.sql.types import (
+    DateType,
+    IntegerType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+)
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from config import settings  # noqa: E402
 from logger import get_logger  # noqa: E402
+from streaming.spark_config import get_spark_session  # noqa: E402
 
 log = get_logger(__name__)
-
-from pyspark.sql import functions as F
-from pyspark.sql.types import (
-    StructType, StructField, StringType, LongType, DateType
-)
-from delta.tables import DeltaTable
-from streaming.spark_config import get_spark_session
-from datetime import datetime
-
-EHR_BATCH_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'ehr_batches')
 
 
 def load_ehr_demographics(spark):
@@ -38,7 +45,7 @@ def load_ehr_demographics(spark):
     (Condition, MedicationStatement, Observation) are stored in Silver.
     """
     rows = []
-    for batch_file in glob.glob(os.path.join(EHR_BATCH_DIR, "*/ehr_batch.json")):
+    for batch_file in glob.glob(os.path.join(settings.ehr_batch_dir, "*/ehr_batch.json")):
         with open(batch_file) as f:
             data = json.load(f)
         for p in data["patients"]:
@@ -74,11 +81,14 @@ def main():
     spark = get_spark_session("GoldDimPatient")
 
     demo_df = load_ehr_demographics(spark)
-    log.info(f"  EHR demographics loaded: {demo_df.count()} patients")
+    log.info(
+        "EHR demographics loaded",
+        extra={"extra_data": {"patient_count": demo_df.count()}},
+    )
 
     # ── Fallback: no Silver bridge yet ─────────────────────────────────
     if not DeltaTable.isDeltaTable(spark, settings.silver_identity_bridge):
-        log.info("  WARNING: Identity bridge not found — building from EHR batch files only.")
+        log.warning("Identity bridge not found — building from EHR batch files only")
         df = (
             demo_df
             .withColumn("patient_key",
@@ -93,9 +103,12 @@ def main():
                     "primary_condition_key", "device_count", "first_reading_date")
             .dropDuplicates(["patient_key"])
         )
-        df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(settings.gold_dim_patient)
-        log.info(f"✅ dim_patient rows written: {df.count()} rows (seeded from EHR batch files)")
-        df.printSchema()
+        df.write.format("delta").mode("overwrite") \
+          .option("overwriteSchema", "true").save(settings.gold_dim_patient)
+        log.info(
+            "dim_patient written (seeded from EHR batch files)",
+            extra={"extra_data": {"row_count": df.count(), "path": settings.gold_dim_patient}},
+        )
         return
 
     # ── Full build from Silver ──────────────────────────────────────────
@@ -181,9 +194,12 @@ def main():
         .dropDuplicates(["patient_key"])
     )
 
-    df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(settings.gold_dim_patient)
-    log.info(f"✅ dim_patient rows written: {df.count()} rows")
-    df.printSchema()
+    df.write.format("delta").mode("overwrite") \
+      .option("overwriteSchema", "true").save(settings.gold_dim_patient)
+    log.info(
+        "dim_patient written",
+        extra={"extra_data": {"row_count": df.count(), "path": settings.gold_dim_patient}},
+    )
 
 
 if __name__ == "__main__":

@@ -13,20 +13,27 @@ condition_key:
   HbA1c → E11.9 (Diabetes), LDL → E78.5 (Hyperlipidemia), BP_systolic → I10 (Hypertension).
   Tests without a mapping get condition_key = NULL.
 """
-import sys, os
+import os
+import sys
+
+from delta.tables import DeltaTable
+from pyspark.sql import functions as F
+from pyspark.sql.types import (
+    BooleanType,
+    DoubleType,
+    IntegerType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+)
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from config import settings  # noqa: E402
 from logger import get_logger  # noqa: E402
+from streaming.spark_config import get_spark_session  # noqa: E402
 
 log = get_logger(__name__)
-
-from pyspark.sql import functions as F
-from pyspark.sql.types import (
-    StructType, StructField, LongType, IntegerType, DoubleType, StringType, BooleanType
-)
-from delta.tables import DeltaTable
-from streaming.spark_config import get_spark_session
-
 
 # Clinical linkage: lab test code → ICD-10 condition code
 LAB_TO_CONDITION = [
@@ -52,11 +59,13 @@ def main():
     spark = get_spark_session("GoldFactLabResult")
 
     if not DeltaTable.isDeltaTable(spark, settings.silver_ehr_lab_results):
-        log.info("  WARNING: Silver ehr_lab_results not found — writing empty fact table.")
+        log.warning("Silver ehr_lab_results not found — writing empty fact table")
         df = spark.createDataFrame([], _EMPTY_SCHEMA)
         df.write.format("delta").mode("overwrite").save(settings.gold_fact_lab_result)
-        log.info("✅ fact_lab_result rows written: 0 rows (Silver not yet populated)")
-        df.printSchema()
+        log.info(
+            "fact_lab_result written (Silver not yet populated)",
+            extra={"extra_data": {"row_count": 0, "path": settings.gold_fact_lab_result}},
+        )
         return
 
     labs          = spark.read.format("delta").load(settings.silver_ehr_lab_results)
@@ -129,8 +138,13 @@ def main():
     )
 
     df.write.format("delta").mode("overwrite").save(settings.gold_fact_lab_result)
-    log.info(f"✅ fact_lab_result rows written: {df.count()} rows")
-    df.printSchema()
+    log.info(
+        "fact_lab_result written",
+        extra={"extra_data": {
+            "row_count": df.count(),
+            "path": settings.gold_fact_lab_result,
+        }},
+    )
 
 
 if __name__ == "__main__":
