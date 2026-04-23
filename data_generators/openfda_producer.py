@@ -47,6 +47,7 @@ from schemas.registry import (  # noqa: E402
     get_avro_serializer,
     register_all_schemas,
 )
+from utils.retry import retry  # noqa: E402
 
 log = get_logger(__name__)
 
@@ -115,9 +116,12 @@ class OpenFDAProducer:
         resp.raise_for_status()
         return resp.json().get("results", [])
 
+    @retry(max_retries=3, backoff_factor=2.0, exceptions=(RuntimeError,))
     def _flush_producer(self, timeout: float = 5.0) -> None:
-        """Block until all queued messages are sent."""
-        self.producer.flush(timeout)
+        """Block until all queued messages are sent. Raises if any remain."""
+        pending = self.producer.flush(timeout)
+        if pending and pending > 0:
+            raise RuntimeError(f"Kafka flush timeout: {pending} messages remaining")
 
     # ── Mapping ────────────────────────────────────────────────────────────
     @staticmethod
