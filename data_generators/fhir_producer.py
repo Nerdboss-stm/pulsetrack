@@ -36,6 +36,7 @@ from metrics import (  # noqa: E402
     records_processed,
     start_metrics_server,
 )
+from utils.retry import retry  # noqa: E402
 
 log = get_logger(__name__)
 
