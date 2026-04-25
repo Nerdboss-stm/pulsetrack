@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     schema_registry_url: str = "http://localhost:8081"
     kafka_topic_sensor: str = "sensor_readings"
     kafka_topic_pharmacy: str = "pharmacy_events"
+    kafka_topic_dlq: str = "pulsetrack_dlq"
 
     # ── Lakehouse base paths ────────────────────────────────────────────
     lakehouse_base: str = "/tmp/pulsetrack-lakehouse"
