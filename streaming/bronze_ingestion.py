@@ -1,52 +1,65 @@
 """
-PulseTrack: Wearable Sensor Readings → Bronze Delta Lake
-==========================================================
-Reads from Kafka (sensor_readings topic) and writes to Bronze Delta on Azurite.
-
-SAME PATTERN as GhostKitchen but:
-- Kafka on port 9093 (PulseTrack's Kafka)
-- Storage on Azurite (Azure Blob emulator) instead of MinIO (S3)
-- Output path uses local filesystem for simplicity (Azurite + Delta + Spark
-  can be tricky; local filesystem is more reliable for learning)
-
-NOTE: For local dev, we write to the local filesystem instead of Azurite.
-This avoids Azure SDK complexity. When deploying to real Azure, switch to
-wasbs:// paths. The pipeline logic is IDENTICAL.
+PulseTrack: Wearable Sensor Readings → Bronze Delta Lake.
+Raw-JSON ingest (Avro decode lands in a follow-up).
 """
 
-import sys, os
+import os
+import signal
+import sys
+
 from pyspark.sql import functions as F
 from pyspark.sql.types import StringType
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from config import settings  # noqa: E402
 from logger import get_logger  # noqa: E402
+from streaming.spark_config import get_spark_session  # noqa: E402
 
 log = get_logger(__name__)
-from streaming.spark_config import get_spark_session
 
 
-# Use local filesystem for Bronze (simpler for learning)
-# In production Azure: "wasbs://container@account.blob.core.windows.net/bronze/..."
+def _install_shutdown_handlers(query, spark):
+    """Stop the streaming query and Spark session on SIGTERM/SIGINT."""
+    def handler(signum, _frame):
+        log.info(
+            "Received shutdown signal, stopping streaming query",
+            extra={"extra_data": {"signal": signum}},
+        )
+        try:
+            query.stop()
+        except Exception:
+            log.exception("Error stopping streaming query")
+        try:
+            spark.stop()
+        except Exception:
+            log.exception("Error stopping Spark session")
+        log.info("Shutdown complete")
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, handler)
+    signal.signal(signal.SIGINT, handler)
 
 
 def run_wearable_bronze():
-    log.info("💜 PulseTrack Wearable → Bronze ingestion starting...")
-    log.info(f"   Source: Kafka topic 'sensor_readings' on localhost:9093")
-    log.info(f"   Sink: {settings.bronze_sensor}")
-    
+    log.info(
+        "PulseTrack Wearable → Bronze ingestion starting",
+        extra={"extra_data": {
+            "source_topic": settings.kafka_topic_sensor,
+            "kafka_bootstrap": settings.kafka_bootstrap,
+            "sink": settings.bronze_sensor,
+        }},
+    )
+
     spark = get_spark_session("PulseTrack-Bronze-Wearables")
-    
+
     kafka_df = (
-        spark.readStream
-        .format("kafka")
-        .option("kafka.bootstrap.servers", settings.kafka_bootstrap)  # PulseTrack Kafka!
+        spark.readStream.format("kafka")
+        .option("kafka.bootstrap.servers", settings.kafka_bootstrap)
         .option("subscribe", settings.kafka_topic_sensor)
         .option("startingOffsets", "earliest")
         .option("failOnDataLoss", "false")
         .load()
     )
-    
+
     bronze_df = (
         kafka_df.select(
             F.col("value").cast(StringType()).alias("raw_value"),
@@ -59,7 +72,7 @@ def run_wearable_bronze():
             F.date_format(F.current_timestamp(), "HH").alias("ingestion_hour"),
         )
     )
-    
+
     query = (
         bronze_df.writeStream
         .format("delta")
@@ -69,15 +82,12 @@ def run_wearable_bronze():
         .partitionBy("ingestion_date", "ingestion_hour")
         .start(settings.bronze_sensor)
     )
-    
-    log.info("✅ PulseTrack Bronze running!")
-    
-    try:
-        query.awaitTermination()
-    except KeyboardInterrupt:
-        query.stop()
-        spark.stop()
-        log.info("Stopped.")
+
+    _install_shutdown_handlers(query, spark)
+    log.info("PulseTrack Bronze running", extra={"extra_data": {"query_id": str(query.id)}})
+
+    query.awaitTermination()
+
 
 if __name__ == "__main__":
     run_wearable_bronze()
