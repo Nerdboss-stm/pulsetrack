@@ -42,6 +42,7 @@ def get_spark_session(app_name="PulseTrack"):
         builder,
         extra_packages=[
             "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3",
+            "org.apache.spark:spark-avro_2.12:3.5.3",
             "org.apache.hadoop:hadoop-azure:3.3.4",
         ]
     ).getOrCreate()
