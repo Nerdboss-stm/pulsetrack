@@ -83,6 +83,16 @@ Stop pipeline → Reset Kafka offsets (or re-read Bronze from a past date)
 → Restart pipeline → Same code reprocesses everything → MERGE into Gold
 → No duplicates because MERGE is idempotent
 
+KAPPA ≠ "EVERYTHING STREAMS":
+Kappa means there is ONE processing ENGINE — not that every job runs in
+streaming mode. PulseTrack's wearable path is true Structured Streaming
+(Bronze → Silver → fact_vital_reading & fact_vital_daily_summary). The EHR
+path arrives as daily file drops, so its Silver and Gold jobs run in BATCH
+mode through the same Spark engine and the same DataFrame API. Each
+transform exposes both `run_streaming()` and `run_batch()`; backfills reuse
+the streaming logic in batch mode, which is the canonical Kappa "same code,
+different trigger" pattern.
+
 SERVING:
 Gold Delta Tables ──→ Apache Superset (dashboards)
 Gold Delta Tables ──→ Cosmos DB (real-time patient API)
