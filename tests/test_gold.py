@@ -15,15 +15,27 @@ Coverage:
 Fact tables may be empty when Silver has not been populated yet.
 Those tests auto-skip with a message rather than failing.
 """
-import sys, os
+import os
+import sys
+
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from pyspark.sql import functions as F
-from streaming.spark_config import get_spark_session
+from config import settings  # noqa: E402
+from pyspark.sql import functions as F  # noqa: E402
+from streaming.spark_config import get_spark_session  # noqa: E402
 
-GOLD_BASE = "/tmp/pulsetrack-lakehouse/gold"
+
+# Legacy integration-style suite: requires the real Gold tables to already
+# exist on disk. Run after a full pipeline run; skip otherwise.
+pytestmark = pytest.mark.skipif(
+    not os.path.exists(settings.gold_dim_date),
+    reason=(
+        f"Legacy test_gold.py requires {settings.gold_base} populated. "
+        "Run the pipeline first or set RUN_INTEGRATION_TESTS=1."
+    ),
+)
 
 
 @pytest.fixture(scope="session")
@@ -32,7 +44,7 @@ def spark():
 
 
 def read_gold(spark, table_name):
-    return spark.read.format("delta").load(f"{GOLD_BASE}/{table_name}")
+    return spark.read.format("delta").load(f"{settings.gold_base}/{table_name}")
 
 
 # ── dim_date ────────────────────────────────────────────────────────────
