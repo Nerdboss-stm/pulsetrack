@@ -39,6 +39,11 @@ from pyspark.sql.types import (
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from config import settings  # noqa: E402
+from data_quality.expectations.gold_vitals_suite import (  # noqa: E402
+    SUITE_NAME as GOLD_SUITE,
+    prepare_for_validation as prepare_gold,
+)
+from data_quality.gx_config import validate as gx_validate  # noqa: E402
 from logger import get_logger  # noqa: E402
 from metrics import (  # noqa: E402
     records_processed,
@@ -132,6 +137,19 @@ def _aggregate(silver_subset: DataFrame, dim_metric: DataFrame, bridge_df) -> Da
 def _merge_or_seed(spark: SparkSession, aggregated: DataFrame) -> int:
     n = aggregated.count()
     if n == 0:
+        return 0
+
+    # GX gate — abort the MERGE if aggregate sanity checks fail.
+    if not gx_validate(
+        prepare_gold(aggregated),
+        suite_name=GOLD_SUITE,
+        layer="gold",
+        source="vital_daily",
+    ):
+        log.error(
+            "Gold gate failed — skipping MERGE for batch",
+            extra={"extra_data": {"row_count": n}},
+        )
         return 0
 
     if not DeltaTable.isDeltaTable(spark, settings.gold_fact_vital_daily):

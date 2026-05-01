@@ -30,6 +30,11 @@ from pyspark.sql.types import IntegerType
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from config import settings  # noqa: E402
+from data_quality.expectations.silver_sensor_suite import (  # noqa: E402
+    SUITE_NAME as SILVER_SUITE,
+    prepare_for_validation as prepare_silver,
+)
+from data_quality.gx_config import validate as gx_validate  # noqa: E402
 from data_quality.quarantine import quarantine_records  # noqa: E402
 from logger import get_logger  # noqa: E402
 from metrics import (  # noqa: E402
@@ -131,14 +136,28 @@ def _process_batch(spark: SparkSession, batch_df: DataFrame, batch_id: int) -> N
     n_invalid = n_total - n_valid
 
     if n_valid > 0:
-        if not DeltaTable.isDeltaTable(spark, settings.silver_sensor):
-            valid.write.format("delta").save(settings.silver_sensor)
+        # GX gate — block the MERGE if the validated rows fail expectations.
+        # Quarantine still runs below so bad records aren't lost.
+        gate_pass = gx_validate(
+            prepare_silver(valid),
+            suite_name=SILVER_SUITE,
+            layer="silver",
+            source="sensor",
+        )
+        if gate_pass:
+            if not DeltaTable.isDeltaTable(spark, settings.silver_sensor):
+                valid.write.format("delta").save(settings.silver_sensor)
+            else:
+                DeltaTable.forPath(spark, settings.silver_sensor).alias("t").merge(
+                    valid.alias("s"),
+                    "t.reading_id = s.reading_id AND t.metric_name = s.metric_name",
+                ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
+            records_processed.labels(layer="silver", source="sensor").inc(n_valid)
         else:
-            DeltaTable.forPath(spark, settings.silver_sensor).alias("t").merge(
-                valid.alias("s"),
-                "t.reading_id = s.reading_id AND t.metric_name = s.metric_name",
-            ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
-        records_processed.labels(layer="silver", source="sensor").inc(n_valid)
+            log.error(
+                "Silver gate failed — skipping MERGE for batch",
+                extra={"extra_data": {"batch_id": batch_id, "valid_rows": n_valid}},
+            )
 
     if n_invalid > 0:
         quarantine_records(cached, "is_valid", layer="silver", source="sensor")

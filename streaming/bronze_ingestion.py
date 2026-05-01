@@ -27,6 +27,11 @@ from pyspark.sql.types import StringType
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from config import settings  # noqa: E402
+from data_quality.expectations.bronze_sensor_suite import (  # noqa: E402
+    SUITE_NAME as BRONZE_SUITE,
+    prepare_for_validation as prepare_bronze,
+)
+from data_quality.gx_config import validate as gx_validate  # noqa: E402
 from logger import get_logger  # noqa: E402
 from metrics import (  # noqa: E402
     records_failed,
@@ -106,6 +111,16 @@ def _make_batch_processor(dlq: DLQHandler):
             records_failed.labels(
                 layer="bronze", source="sensor", reason="avro_parse",
             ).inc(invalid)
+
+        # Informative quality gate — Bronze is the source of truth, so we
+        # never block the write, just publish the result + metric.
+        if valid > 0:
+            gx_validate(
+                prepare_bronze(cached),
+                suite_name=BRONZE_SUITE,
+                layer="bronze",
+                source="sensor",
+            )
 
         cached.unpersist()
         log.info(
