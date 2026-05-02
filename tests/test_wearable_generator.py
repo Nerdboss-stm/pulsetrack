@@ -7,7 +7,11 @@ Run: pytest tests/test_wearable_generator.py -v
 import sys, os, json
 from datetime import datetime
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from data_generators.synthetic.wearable_generator import generate_reading, USERS, DEVICE_METRICS
+from data_generators.synthetic.wearable_generator import (  # noqa: E402
+    DEVICE_METRICS,
+    USERS,
+    generate_reading,
+)
 
 
 def parse_ts(ts_str):
