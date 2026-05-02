@@ -1,5 +1,17 @@
 version: '3.8'
 
+# ─────────────────────────────────────────────────────────────────────────
+# PulseTrack local dev stack:
+#   Kafka + ZooKeeper + Schema Registry  → ingest backbone
+#   Spark master + worker                 → batch & stream compute
+#   Azurite                               → Azure Blob emulator
+#   Prometheus + Grafana                  → metrics & dashboards
+#
+# Spark master UI is on host port 8085 (8081 is reserved for Schema Registry).
+# Every service has a healthcheck, restart policy, mem/cpu limits, and a
+# named volume for any persistent state.
+# ─────────────────────────────────────────────────────────────────────────
+
 services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
@@ -177,9 +189,9 @@ services:
     cpus: 0.5
 
 volumes:
-  prometheus_data:
-  grafana_data:
   zookeeper_data:
   zookeeper_log:
   kafka_data:
   azurite_data:
+  prometheus_data:
+  grafana_data:
