@@ -1,201 +1,257 @@
 # PulseTrack — Architecture Reference
 
 ## Overview
-End-to-end wearable health analytics platform. Ingests from 6 sources (4 wearable device types, EHR clinical data, pharmacy prescriptions). Kappa Architecture with single streaming engine. Detects health anomalies. Serves clinical dashboards.
 
-**Pattern:** Kappa Architecture (single streaming engine for everything)
-**Modeling:** Snowflake Schema (Gold) — normalized hierarchical dimensions
-**Cloud:** Azure Free Tier + Docker local development
-**Cost:** $0
+End-to-end healthcare analytics platform. Three real data sources flow
+through a Kappa-architecture lakehouse on Delta Lake into a Snowflake-schema
+analytical model. The wearable path is true Spark Structured Streaming;
+EHR + dimension paths run as batch through the same Spark engine via the
+same DataFrame API. Both paths share a single set of `run_streaming()` /
+`run_batch()` entrypoints — that's the canonical "one engine, two
+triggers, identical transform code" Kappa property.
 
-## Architecture Pattern: Kappa
+**Pattern:** Kappa (one engine, streaming-first, batch-when-natural)
+**Modeling:** Snowflake schema in Gold (normalized hierarchies on
+condition_category, drug_class)
+**Wire format:** Avro through Confluent Schema Registry on Kafka
+**Quality:** Great Expectations 1.x + DLQ + per-layer Quarantine
+**Storage:** Delta Lake 3.0 with autoOptimize + Z-ORDER maintenance
 
-### Why Kappa?
-Wearable sensor data is NATURALLY APPEND-ONLY. A heart rate reading of 72 bpm at 2:34pm doesn't get "corrected" later — it's an immutable measurement. Unlike orders (which transition through states and may be cancelled/refunded), vital signs are simple append events.
+---
 
-**Single streaming pipeline handles:**
-- Real-time processing: new sensor readings → Silver → Gold in ~30 seconds
-- Historical backfill: replay events from Bronze through the SAME pipeline
-- Late-arriving data: batch-synced readings (hours old) process through the SAME pipeline
+## Data flow
 
-**One codebase, one logic path.** No dual-pipeline inconsistency. No separate batch reconciliation.
+```mermaid
+flowchart TB
+  subgraph Sources["Data Sources"]
+    WG["Wearable Generator<br/>physiological model"]
+    OFDA["Open FDA Drug API<br/>poll every 5 min"]
+    FHIR["HAPI FHIR R4<br/>daily batch fetch"]
+  end
 
-### Why NOT Lambda?
-Lambda makes sense when:
-- Business events have complex state machines (order lifecycle)
-- Financial reconciliation requires exact batch numbers
-- Corrections/refunds change historical facts
+  subgraph KafkaBus["Kafka + Schema Registry"]
+    TS["sensor_readings (Avro)"]
+    TP["pharmacy_events (Avro)"]
+    DLQK["pulsetrack_dlq (JSON)"]
+  end
 
-PulseTrack doesn't have these issues. A sensor reading is a sensor reading — it doesn't change state. So the complexity of maintaining two pipelines (batch + streaming) isn't justified.
+  subgraph Bronze["Bronze (Delta)"]
+    BS["bronze.sensor_readings"]
+    BP["bronze.pharmacy_events<br/>(planned)"]
+    EHRJSON["data/ehr_batches/<br/>YYYY-MM-DD/*.json"]
+  end
 
-### Comparison with GhostKitchen (Lambda)
-| Aspect | GhostKitchen (Lambda) | PulseTrack (Kappa) |
-|--------|----------------------|-------------------|
-| Data nature | Stateful (order lifecycle) | Append-only (sensor readings) |
-| Corrections | Orders cancelled/refunded → need batch recomputation | Readings don't change |
-| Backfill | Separate batch Spark job | Replay through same streaming pipeline |
-| Code paths | 2 (streaming + batch) | 1 (streaming only) |
-| Reconciliation | Daily batch overwrites streaming Gold | Not needed |
-| Complexity | Higher (dual pipeline) | Lower (single pipeline) |
-| When to use | Complex stateful events, financial data | Append-only events, IoT, logs |
+  subgraph Silver["Silver (Delta)"]
+    SS["silver.sensor_readings"]
+    SC["silver.ehr_conditions (SCD1)"]
+    SM["silver.ehr_medications (SCD2)"]
+    SL["silver.ehr_lab_results"]
+    BRG["silver.identity.patient_identity_bridge"]
+  end
 
-**Interview talking point:** "I chose different architectures for each project based on the data characteristics. Lambda for stateful order lifecycles, Kappa for append-only sensor readings. Knowing WHEN to use each pattern is more important than memorizing what they are."
+  subgraph Gold["Gold — Snowflake star (Delta)"]
+    DPAT["dim_patient (PII-masked)"]
+    DDEV["dim_device (SCD2)"]
+    DMET["dim_metric"]
+    DDATE["dim_date / dim_time"]
+    DCOND["dim_condition → dim_condition_category"]
+    DMED["dim_medication → dim_drug_class"]
+    FVD["fact_vital_daily_summary"]
+    FVR["fact_vital_reading"]
+    FLR["fact_lab_result"]
+  end
 
-**PDF Reference:** Lambda (SD pages 27-29), Kappa (SD pages 29-32), comparison (SD page 32)
+  subgraph Ops
+    DLQD["DLQ (Delta + Kafka)"]
+    QUAR["Quarantine (Delta)"]
+    GXG["GX gates"]
+    PROM["Prometheus"]
+    GRAF["Grafana"]
+    COMP["compaction.py<br/>OPTIMIZE / Z-ORDER / VACUUM"]
+  end
 
-## Data Flow
-
+  WG --> TS
+  OFDA --> TP
+  FHIR --> EHRJSON
+  TS --> BS
+  TP --> BP
+  EHRJSON --> SC
+  EHRJSON --> SM
+  EHRJSON --> SL
+  BS -->|Avro decode<br/>foreachBatch| SS
+  BS -->|deserialization fail| DLQD
+  SS -->|invalid rows| QUAR
+  SS --> BRG
+  SC --> BRG
+  SM --> BRG
+  SS --> FVR
+  SS --> FVD
+  SL --> FLR
+  BRG --> DPAT
+  SS --> DDEV
+  GXG -.bronze.-> BS
+  GXG -.silver.-> SS
+  GXG -.gold.-> FVD
+  PROM -.scrapes.-> Bronze
+  PROM -.scrapes.-> Silver
+  PROM -.scrapes.-> Gold
+  PROM --> GRAF
+  COMP -.daily.-> Bronze
+  COMP -.daily.-> Silver
+  COMP -.daily.-> Gold
 ```
-KAPPA FLOW (single streaming engine handles everything):
-┌────────────────────────────────────────────────────────────────────┐
-│                                                                    │
-│ wearable_generator ──┐                                            │
-│ pharmacy_generator ──┤──→ Kafka ──→ Spark Structured ──→ Bronze   │
-│ device_registry ─────┘              Streaming             Delta   │
-│                                        │                          │
-│                                  SAME PIPELINE                    │
-│                                        │                          │
-│                                        ├──→ Silver (cleaned)      │
-│                                        │      │                   │
-│                                        │      ├── dedup           │
-│                                        │      ├── normalize       │
-│                                        │      ├── validate        │
-│                                        │      └── SCD2 updates    │
-│                                        │                          │
-│                                        └──→ Gold (Snowflake)      │
-│                                              │                    │
-│                                              ├── fact tables      │
-│                                              ├── dim tables       │
-│                                              └── anomaly alerts   │
-│                                                                    │
-│ EHR batch files ──→ Airflow ──→ Bronze ──→ SAME PIPELINE picks   │
-│ feedback CSVs ──→ Airflow ──→ Bronze     up new Bronze data      │
-│                                                                    │
-└────────────────────────────────────────────────────────────────────┘
 
-BATCH SOURCES JOIN THE STREAM:
-Airflow writes EHR batches and CSVs to Bronze Delta tables.
-The streaming pipeline reads from Bronze (using readStream on Delta).
-So batch data flows through the SAME streaming transformations.
+---
 
-BACKFILL = REPLAY:
-Stop pipeline → Reset Kafka offsets (or re-read Bronze from a past date)
-→ Restart pipeline → Same code reprocesses everything → MERGE into Gold
-→ No duplicates because MERGE is idempotent
+## Why Kappa here (not Lambda)
 
-KAPPA ≠ "EVERYTHING STREAMS":
-Kappa means there is ONE processing ENGINE — not that every job runs in
-streaming mode. PulseTrack's wearable path is true Structured Streaming
-(Bronze → Silver → fact_vital_reading & fact_vital_daily_summary). The EHR
-path arrives as daily file drops, so its Silver and Gold jobs run in BATCH
-mode through the same Spark engine and the same DataFrame API. Each
-transform exposes both `run_streaming()` and `run_batch()`; backfills reuse
-the streaming logic in batch mode, which is the canonical Kappa "same code,
-different trigger" pattern.
+Sensor readings are append-only — a heart-rate at 14:34 doesn't get
+"corrected" later, only superseded by future readings. That removes
+Lambda's primary justification (reconciling a stateful business event
+between fast and slow paths). PulseTrack therefore picks Kappa:
 
-SERVING:
-Gold Delta Tables ──→ Apache Superset (dashboards)
-Gold Delta Tables ──→ Cosmos DB (real-time patient API)
-Anomaly alerts ──→ Azure Functions (email/SMS notifications)
-```
+- **One processing engine** — Spark Structured Streaming is the canonical
+  driver. Each transform exposes both `run_streaming()` and `run_batch()`,
+  but they share the same per-row logic.
+- **Backfill = replay** — to reprocess a window, reset Kafka offsets (or
+  re-read the Bronze partitions) and run the same code. MERGE is
+  idempotent so duplicates don't accumulate.
+- **Late data via watermarks** — Silver applies
+  `withWatermark("event_timestamp", "10 minutes")` and
+  `dropDuplicatesWithinWatermark(["reading_id","metric_name"])`. Late
+  events outside the watermark are quarantined, not silently dropped.
 
-## Component Details
+### Kappa ≠ "everything streams"
 
-### Apache Kafka (Docker — port 9093)
-- **Role:** Event streaming backbone (same role as GhostKitchen, different port)
-- **Topics:** sensor_readings (6 partitions), fitness_activities (2), pharmacy_events (2), device_registry (1)
-- **Partition strategy:** sensor_readings keyed by device_id (6 partitions for higher throughput — this is the highest-volume source). Others lower volume → fewer partitions.
-- **Kappa-specific:** Kafka also serves as the replayable log for backfills. Consumer offsets can be reset to replay history through the same pipeline.
-- **PDF:** Event-Driven Architecture (SD pages 36-39), Partition planning (SD page 48)
+Kappa means **one engine**, not **one mode**. The wearable path is true
+Structured Streaming. The EHR path arrives as daily file drops; its Silver
+and Gold jobs run in batch through the same Spark engine and the same
+DataFrame API. That's the canonical "same code, different trigger"
+pattern — backfills reuse the streaming logic in batch mode without
+duplication.
 
-### Apache Spark 3.5 Structured Streaming (Docker)
-- **Role:** THE SINGLE PROCESSING ENGINE — Kappa's heart
-- **Mode:** Continuous micro-batch (trigger every 30 seconds)
-- **Reads from:** Kafka topics (for streaming sources) + Bronze Delta tables (for batch sources that Airflow lands there)
-- **Writes to:** Silver Delta tables (with MERGE for dedup/SCD2) + Gold Delta tables (with MERGE for dimensional updates)
-- **Why Spark not Flink?** (1) Backfills in Kappa require replaying large historical data — Spark handles multi-TB replays better, (2) Delta Lake MERGE integration is native in Spark, (3) same DataFrame API works for both streaming and batch mode
-- **PDF:** Kappa Architecture (SD pages 29-32), Spark vs Flink (SD pages 124-127)
-
-### Delta Lake on Azurite / Local Filesystem
-- **Role:** ACID lakehouse storage
-- **Why Delta Lake?** Kappa REQUIRES ACID MERGE operations. The streaming pipeline continuously upserts into Silver/Gold. Without ACID guarantees, concurrent reads/writes would corrupt data.
-- **Why Azurite?** Local emulation of Azure Blob Storage. Same API — code works unchanged on real Azure.
-- **Pragmatic note:** For local development, we use local filesystem (/tmp/pulsetrack-lakehouse/) instead of Azurite to avoid Azure SDK complexity. Same Delta Lake, different storage backend.
-- **Layers:**
-  - Bronze: /tmp/pulsetrack-lakehouse/bronze/{source}/ — raw, append-only
-  - Silver: /tmp/pulsetrack-lakehouse/silver/{table}/ — cleaned, normalized, SCD2
-  - Gold: /tmp/pulsetrack-lakehouse/gold/{table}/ — Snowflake Schema dimensional model
-- **PDF:** Medallion (SD pages 32-35), Upsert Patterns (SD pages 43-47)
-
-### Apache Airflow (Docker) — Maintenance Role
-- **Role in Kappa:** Airflow does NOT orchestrate the main ETL (that's the continuous streaming pipeline). Airflow handles MAINTENANCE:
-  - dag_ehr_batch_ingest: Daily — detect new EHR files, write to Bronze
-  - dag_identity_resolution: Daily at 2AM — full identity resolution refresh
-  - dag_data_quality_sweep: Every 6 hours — comprehensive quality checks
-  - dag_compaction_maintenance: Daily — OPTIMIZE + Z-ORDER on hot Delta tables
-  - dag_hipaa_audit: Weekly — full HIPAA compliance scan
-  - dag_backfill_replay: Manual — reset offsets, replay through streaming pipeline
-- **Key difference from GhostKitchen:** In Lambda, Airflow is the CONDUCTOR of the batch path. In Kappa, Airflow is the JANITOR — handling maintenance, not the core pipeline.
-- **PDF:** Orchestration Patterns (SD pages 57-63), Hybrid orchestration (SD page 62)
-
-### Anomaly Detection (Spark Streaming — stateful)
-- **Role:** Real-time personalized health anomaly detection
-- **How:** Per-patient rolling statistics (mean, std dev for each metric over 30 days). New readings compared against personal baseline. Deviation > 2σ = anomaly alert.
-- **State:** Keyed by (patient_key, metric_name). Each key stores: running stats, circular buffer of recent values. Backed by RocksDB. TTL = 90 days for inactive patients.
-- **Why personal baselines?** A runner with resting HR 52 at HR 85 is more concerning than a sedentary person at HR 85. Population-level thresholds miss personalized anomalies.
-- **PDF:** Stateful Streaming (SD pages 49-51), State Stores (SD pages 49-50)
-
-### Apache Superset (Docker)
-- **Role:** Clinical analytics dashboards
-- **Connected to:** Gold Delta tables (via DuckDB or direct read)
-- **Dashboards:** Patient vital trends, anomaly alerts, medication timelines, population analytics
-- **Why Superset (not Metabase)?** Different BI tool than GhostKitchen — shows you're not tied to one tool. Superset also has SQL Lab for ad-hoc queries.
-
-### Azure Free Tier (optional cloud deployment)
-- **Blob Storage:** Bronze/Silver/Gold (5GB free)
-- **Cosmos DB:** Real-time patient lookup API (25GB free)
-- **Azure Functions:** Alert notifications (1M executions free)
-- **Event Hubs:** Cloud Kafka alternative (1M events free)
-- **Azure Monitor:** Alerting
-- **Terraform:** Infrastructure as code
-
-## Late-Arriving Data Strategy (Kappa-specific)
-**Kappa handles late data NATIVELY:**
-- 30% of wearable readings arrive late (batch sync from devices)
-- The streaming pipeline doesn't care — a 2-second-old event and a 2-hour-old event go through the SAME code
-- MERGE into Silver/Gold handles idempotency — replayed data overwrites existing rows, no duplicates
-- No DLQ needed (unlike GhostKitchen's Lambda approach)
-- 48-hour watermark: events within 48h process normally. Events beyond 48h are flagged with late_flag=true but still processed.
-
-**Comparison:**
-| | GhostKitchen (Lambda) | PulseTrack (Kappa) |
+| | Streaming wearable | Batch EHR / dims |
 |---|---|---|
-| Late events | DLQ → nightly batch reconciliation | Same pipeline, no special handling |
-| Correctness | Batch is the "truth" layer | Streaming IS the truth |
-| DLQ needed? | Yes (events > 24h) | No |
-| Complexity | Higher (separate reconciliation) | Lower (automatic) |
+| Source | Kafka (`sensor_readings`) | `data/ehr_batches/*.json` |
+| Trigger | `processingTime=30s` micro-batches | Single batch |
+| Sink | Delta MERGE in `foreachBatch` | Delta MERGE / overwrite |
+| Code | `sensor_silver.run_streaming()` | `sensor_silver.run_batch()` |
+| Identical transform fn? | Yes — `transform(bronze)` | Yes — same `transform(bronze)` |
 
-## Monitoring Strategy (Kappa-specific)
-- **Streaming lag:** CRITICAL. In Kappa, the streaming pipeline IS the entire ETL. Lag > 5 min = stale Gold tables.
-- **Checkpoint duration:** Must be < micro-batch interval (30s). If checkpoints take 25s+, pipeline falls behind.
-- **State store size:** Per-patient anomaly state grows with users. Monitor RocksDB memory.
-- **SCD2 chain integrity:** Custom check: no gaps/overlaps in effective_date ranges.
-- **Identity resolution coverage:** What % of readings have resolved_patient_key? Target >95%.
-- **Anomaly alert rate per firmware:** Spike in anomalies for one firmware version = device bug, not health crisis.
+---
 
-## HIPAA Compliance
-- **De-identification:** Gold uses age_bracket (not exact age), city (not address), no names
-- **Encryption:** Delta Lake files encrypted at rest
-- **Access control:** data_engineer (all layers), clinical_analyst (Gold only, PII masked), researcher (Gold, fully de-identified)
-- **Deletion:** Delta Lake DELETE across all layers → verification sweep → audit log
-- **Retention conflict:** HIPAA requires 7-year retention. Deletion = de-identify (remove PII) but keep analytical record.
-- **Audit:** Weekly dag_hipaa_audit scans for PII leakage
+## Component catalog
 
-## Cost Architecture
-- Local Docker: $0
-- Azure Free Tier: Blob (5GB), Cosmos DB (25GB), Functions (1M req), Event Hubs (1M events)
-- Production estimate (if scaled): ~$800/month for 100K users
-  - Azure Blob: ~$100/month (50TB hot + warm)
-  - Databricks/HDInsight: ~$400/month (streaming + batch)
-  - Cosmos DB: ~$200/month (real-time lookups)
-  - Azure Functions + Monitor: ~$100/month
+| Component | Role | Code |
+|---|---|---|
+| Wearable generator | Physiological vitals over Kafka | `data_generators/wearable_generator.py` + `vitals_model.py` |
+| Open FDA producer | Adverse-event reports → Kafka | `data_generators/openfda_producer.py` |
+| FHIR producer | EHR batches from HAPI server | `data_generators/fhir_producer.py` |
+| Schema Registry | Avro contract enforcement | `schemas/registry.py` + `*.avsc` |
+| Bronze ingestion | Kafka → Delta (raw + decoded) | `streaming/bronze_ingestion.py` |
+| DLQ | Failed deserialization sink | `streaming/dlq.py` (Delta + Kafka) |
+| Quarantine | Failed quality-rule sink | `data_quality/quarantine.py` |
+| Silver sensor | Explode + flag + dedup + MERGE | `transformations/bronze_to_silver/sensor_silver.py` |
+| Silver EHR | FHIR JSON → conditions/meds/labs | `transformations/bronze_to_silver/ehr_silver.py` |
+| Identity bridge | 4-type identifier resolution | `transformations/identity_resolution/patient_identity_bridge.py` |
+| Gold dims | dim_patient, dim_device, etc. | `transformations/silver_to_gold/dim_*.py` |
+| Gold facts | Daily summary, atomic readings, lab results | `transformations/silver_to_gold/fact_*.py` |
+| Quality gates | GX 1.x suites | `data_quality/gx_config.py` + `expectations/*` |
+| Compaction | OPTIMIZE/Z-ORDER/VACUUM/TBLPROPERTIES | `maintenance/compaction.py` |
+| Observability | Prometheus + Grafana | `metrics.py` + `monitoring/*` |
+
+---
+
+## Identity resolution (4 identifier types)
+
+```mermaid
+flowchart LR
+  subgraph EHR
+    MRN["hospital_mrn<br/>(MRN-12345-HOSP-A)"]
+    EM["email<br/>(p@example.com)"]
+  end
+
+  subgraph Wearable
+    DEV["device_account_id<br/>(acct_71234)"]
+  end
+
+  subgraph FDA
+    FDAID["fda_report_id<br/>(FDA-9876543)"]
+  end
+
+  PK["patient_key = sha256(lower(email))"]
+
+  EM --> PK
+  MRN -->|same patient bundle| EM
+  DEV -->|patient_email match| EM
+  DEV -.unmatched.-> PR["pending_registration"]
+  FDAID -.no link source.-> PR
+```
+
+Phases (executed in order in `run_identity_bridge`):
+
+1. **EHR** — every `(MRN, email)` pair from `silver.ehr_conditions ∪
+   silver.ehr_medications` produces two `linked` rows (`hospital_mrn` +
+   `email`) tied to a `patient_key = sha256(email)`.
+2. **Devices (transitive)** — wearable events now carry `patient_email`.
+   The bridge looks up that email in the just-written `email` rows; on a
+   match the device is `linked / exact_email_match`, otherwise
+   `pending_registration`.
+3. **FDA reports** — every distinct `fda_report_id` from
+   `bronze.pharmacy_events` (when that table exists) lands as
+   `pending_registration` until a future linkage source connects pseudo-IDs
+   to real patients.
+4. **Resolution metrics** — `data_quality/identity_metrics.py` publishes
+   `pt_identity_link_rate_pct`, `pt_identity_unique_patients`,
+   `pt_identity_pending_rows`, `pt_identity_avg_ids_per_patient`.
+
+---
+
+## Late-arriving data
+
+Wearables batch-sync — a reading taken at 09:00 may not arrive until
+17:00. The pipeline handles this in three places:
+
+1. **Silver** flags `is_late_arriving` when
+   `sync_timestamp − event_timestamp > 7200s` (configurable via
+   `PT_LATE_ARRIVAL_THRESHOLD_SECONDS`).
+2. **Watermark** at 10 minutes prevents stale state from accumulating in
+   `dropDuplicatesWithinWatermark`. Beyond that window, late dupes appear
+   as new rows but are caught by the MERGE on `(reading_id, metric_name)`.
+3. **Gold daily summary** re-reads only the slice of Silver matching
+   `(device_account_id, metric_name, device_type, event_date)` tuples
+   touched by the current batch, recomputes the daily aggregates, and
+   MERGEs on `(patient_key, metric_key, date_key)` — so late readings
+   correctly update the existing daily row.
+
+---
+
+## Failure modes & response
+
+| Failure | Where | Sink | Reason label |
+|---|---|---|---|
+| Avro decode fails | Bronze ingestion | DLQ (Delta + Kafka) | `avro_deserialization_failure` |
+| Out-of-range metric value | Silver `add_quality_flags` | Quarantine | column name (`is_valid`) |
+| GX expectation fails | Silver / Gold gate | metric counter, MERGE skipped | `quality_gate` |
+| Kafka delivery error | Producer | metric counter | `delivery_error` |
+| API 429 / 5xx | OpenFDA / FHIR producer | retry then metric counter | `api_error` |
+| Spark write contention | Maintenance | `@retry` then metric counter | exception class |
+
+Tools:
+
+- **`@retry`** decorator at `utils/retry.py` (exponential backoff,
+  selective exception filter)
+- **Graceful shutdown** at `utils/streaming.setup_graceful_shutdown` —
+  SIGTERM/SIGINT calls `query.stop()` then `spark.stop()` before exit so
+  the checkpoint is left consistent
+
+---
+
+## What's planned
+
+- **Bronze pharmacy consumer** — symmetric to `bronze_ingestion.py` but on
+  the `pharmacy_events` topic; would unblock the FDA bridge phase.
+- **Silver pharmacy** — drug enrichment, NDC join, dedup on
+  `safetyreportid`.
+- **ML feature store** on `fact_vital_reading` for an anomaly classifier.
+- **Airflow DAGs** for batch orchestration (currently driven by `make`).
