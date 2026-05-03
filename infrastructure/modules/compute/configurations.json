@@ -1,0 +1,33 @@
+[
+  {
+    "Classification": "spark-defaults",
+    "Properties": {
+      "spark.sql.extensions": "io.delta.sql.DeltaSparkSessionExtension,org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
+      "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+      "spark.sql.catalog.glue_iceberg": "org.apache.iceberg.spark.SparkCatalog",
+      "spark.sql.catalog.glue_iceberg.catalog-impl": "org.apache.iceberg.aws.glue.GlueCatalog",
+      "spark.sql.catalog.glue_iceberg.warehouse": "s3://${lakehouse_bucket}/iceberg/warehouse/",
+      "spark.sql.catalog.glue_iceberg.io-impl": "org.apache.iceberg.aws.s3.S3FileIO",
+      "spark.sql.adaptive.enabled": "true",
+      "spark.sql.adaptive.coalescePartitions.enabled": "true",
+      "spark.sql.shuffle.partitions": "200",
+      "spark.dynamicAllocation.enabled": "true",
+      "spark.dynamicAllocation.minExecutors": "1",
+      "spark.dynamicAllocation.maxExecutors": "10",
+      "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
+      "spark.sql.parquet.compression.codec": "zstd"
+    }
+  },
+  {
+    "Classification": "iceberg-defaults",
+    "Properties": {
+      "iceberg.enabled": "true"
+    }
+  },
+  {
+    "Classification": "spark-hive-site",
+    "Properties": {
+      "hive.metastore.client.factory.class": "com.amazonaws.glue.catalog.metastore.AWSGlueDataCatalogHiveClientFactory"
+    }
+  }
+]
