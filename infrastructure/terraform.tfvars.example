@@ -14,10 +14,9 @@ alert_email = "you@example.com"
 # Create one in the AWS console (EC2 → Key Pairs) before running `terraform apply`.
 key_pair_name = "pulsetrack-emr"
 
-# Optional: VPC layout. Defaults give a /16 with 2 public + 2 private /24 subnets.
-# vpc_cidr             = "10.42.0.0/16"
-# public_subnet_cidrs  = ["10.42.1.0/24", "10.42.2.0/24"]
-# private_subnet_cidrs = ["10.42.11.0/24", "10.42.12.0/24"]
+# Optional: VPC layout. Defaults give a /16 with 2 public /24 subnets across 2 AZs.
+# vpc_cidr            = "10.42.0.0/16"
+# public_subnet_cidrs = ["10.42.1.0/24", "10.42.2.0/24"]
 
 # Optional: EMR sizing. Defaults are tuned for the dev cost envelope (~$0.30/hr running).
 # emr_release_label        = "emr-7.2.0"

@@ -42,12 +42,6 @@ variable "public_subnet_cidrs" {
   default     = ["10.42.1.0/24", "10.42.2.0/24"]
 }
 
-variable "private_subnet_cidrs" {
-  description = "CIDR blocks for private subnets (one per AZ)"
-  type        = list(string)
-  default     = ["10.42.11.0/24", "10.42.12.0/24"]
-}
-
 variable "emr_release_label" {
   description = "EMR release label. emr-7.2.0 ships Spark 3.5.1 and Iceberg 1.6.1"
   type        = string

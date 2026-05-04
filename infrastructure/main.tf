@@ -38,12 +38,11 @@ locals {
 module "networking" {
   source = "./modules/networking"
 
-  name_prefix          = local.name_prefix
-  environment          = var.environment
-  aws_region           = var.aws_region
-  vpc_cidr             = var.vpc_cidr
-  public_subnet_cidrs  = var.public_subnet_cidrs
-  private_subnet_cidrs = var.private_subnet_cidrs
+  name_prefix         = local.name_prefix
+  environment         = var.environment
+  aws_region          = var.aws_region
+  vpc_cidr            = var.vpc_cidr
+  public_subnet_cidrs = var.public_subnet_cidrs
 }
 
 module "storage" {
@@ -76,7 +75,7 @@ module "kafka" {
 
   name_prefix             = local.name_prefix
   environment             = var.environment
-  subnet_ids              = module.networking.private_subnet_ids
+  subnet_ids              = module.networking.public_subnet_ids
   kafka_security_group_id = module.networking.kafka_security_group_id
 }
 
