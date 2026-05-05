@@ -81,7 +81,7 @@ flowchart LR
 
 ---
 
-## What's implemented today
+## What's implemented
 
 | Area | Status | Notes |
 |---|---|---|
