@@ -199,6 +199,7 @@ def load_bridge(bridge_df: DataFrame, spark: SparkSession):
             "last_seen": "new.last_seen",
             "link_status": "new.link_status",
             "patient_key": "new.patient_key",
+            "match_method": "new.match_method",
         }
     ).whenNotMatchedInsertAll().execute()
     log.info("patient_identity_bridge merged")

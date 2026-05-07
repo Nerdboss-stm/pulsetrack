@@ -59,6 +59,17 @@ class Settings(BaseSettings):
     pharmacy_changes_per_minute: int = 5
     user_count: int = 100
 
+    # ── Prometheus metrics ports (one per process to avoid collision) ───
+    metrics_port_wearable: int = 8000
+    metrics_port_bronze_sensor: int = 8001
+    metrics_port_bronze_pharmacy: int = 8002
+    metrics_port_openfda: int = 8003
+    metrics_port_silver_sensor: int = 8004
+    metrics_port_silver_pharmacy: int = 8005
+    metrics_port_gold_daily: int = 8006
+    metrics_port_gold_reading: int = 8007
+    metrics_port_whoop: int = 8008
+
     # ── Bronze paths ────────────────────────────────────────────────────
     @property
     def bronze_sensor(self) -> str:

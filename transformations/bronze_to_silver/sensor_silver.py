@@ -173,7 +173,7 @@ def _process_batch(spark: SparkSession, batch_df: DataFrame, batch_id: int) -> N
 
 
 # ── Streaming entrypoint ──────────────────────────────────────────────────────
-def run_streaming(metrics_port: int = 8003) -> None:
+def run_streaming(metrics_port: int = settings.metrics_port_silver_sensor) -> None:
     start_metrics_server(metrics_port)
     spark = get_spark_session("PulseTrack-Silver-Sensors")
 
@@ -239,4 +239,12 @@ def run_sensor_silver(spark: Optional[SparkSession] = None) -> None:
 
 
 if __name__ == "__main__":
-    run_streaming()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=["streaming", "batch"], default="streaming")
+    args = parser.parse_args()
+    if args.mode == "batch":
+        run_batch()
+    else:
+        run_streaming()

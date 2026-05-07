@@ -21,6 +21,7 @@ import sys
 from datetime import datetime
 
 from delta.tables import DeltaTable
+from pyspark.sql import Window
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
     DateType,
@@ -155,11 +156,18 @@ def main():
             F.col("condition_key"),
             F.col("condition_code").alias("icd10_code"),
         )
+        # Deterministic primary condition: pick the row with the lexicographically
+        # smallest icd10_code per patient (ties broken by condition_key). Avoids the
+        # non-determinism of F.first() over an unordered groupBy.
+        primary_window = Window.partitionBy("patient_id").orderBy(
+            F.col("icd10_code").asc_nulls_last(), F.col("condition_key").asc_nulls_last()
+        )
         primary_cond = (
             conds_silver.filter(F.col("status") == "active")
             .join(cond_lookup, on="icd10_code", how="left")
-            .groupBy("patient_id")
-            .agg(F.first("condition_key", ignorenulls=True).alias("primary_condition_key"))
+            .withColumn("__rn", F.row_number().over(primary_window))
+            .filter(F.col("__rn") == 1)
+            .select(F.col("patient_id"), F.col("condition_key").alias("primary_condition_key"))
         )
         patients = patients.join(primary_cond, on="patient_id", how="left")
     else:

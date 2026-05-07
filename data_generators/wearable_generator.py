@@ -153,7 +153,7 @@ def _on_delivery(err, msg):
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
-def main(num_users: int = 100, metrics_port: int = 8000):
+def main(num_users: int = 100, metrics_port: int = settings.metrics_port_wearable):
     start_metrics_server(metrics_port)
 
     register_all_schemas()

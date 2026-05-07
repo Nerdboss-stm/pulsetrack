@@ -141,7 +141,7 @@ def _make_batch_processor(dlq: DLQHandler):
 
 
 def run_wearable_bronze(
-    metrics_port: int = 8000,
+    metrics_port: int = settings.metrics_port_bronze_sensor,
     dlq: Optional[DLQHandler] = None,
 ):
     start_metrics_server(metrics_port)

@@ -277,7 +277,7 @@ class OpenFDAProducer:
 
 
 def main():
-    start_metrics_server(8001)
+    start_metrics_server(settings.metrics_port_openfda)
     register_all_schemas()
     OpenFDAProducer().run()
 

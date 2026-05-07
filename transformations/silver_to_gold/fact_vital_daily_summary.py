@@ -214,7 +214,7 @@ def _make_streaming_processor(spark: SparkSession):
     return process
 
 
-def run_streaming(metrics_port: int = 8004) -> None:
+def run_streaming(metrics_port: int = settings.metrics_port_gold_daily) -> None:
     start_metrics_server(metrics_port)
     spark = get_spark_session("PulseTrack-Gold-VitalDaily")
 
@@ -284,4 +284,12 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    run_batch()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=["streaming", "batch"], default="batch")
+    args = parser.parse_args()
+    if args.mode == "streaming":
+        run_streaming()
+    else:
+        run_batch()
