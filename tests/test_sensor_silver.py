@@ -33,6 +33,7 @@ _DECODED_SCHEMA = StructType(
         StructField("metrics", MapType(StringType(), DoubleType())),
         StructField("event_timestamp", TimestampType()),
         StructField("sync_timestamp", TimestampType()),
+        StructField("source_type", StringType()),
     ]
 )
 BRONZE_TEST_SCHEMA = StructType(
@@ -67,6 +68,7 @@ def _bronze_row(
             "metrics": {k: (float(v) if v is not None else None) for k, v in metrics.items()},
             "event_timestamp": event_ts,
             "sync_timestamp": sync_ts,
+            "source_type": "simulator",
         },
     }
 

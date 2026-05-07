@@ -28,6 +28,7 @@ from pyspark.sql.types import (
     DoubleType,
     IntegerType,
     LongType,
+    StringType,
     StructField,
     StructType,
     TimestampType,
@@ -56,6 +57,7 @@ FACT_SCHEMA = StructType(
         StructField("value", DoubleType(), True),
         StructField("is_valid", BooleanType(), True),
         StructField("is_late_arriving", BooleanType(), True),
+        StructField("source_type", StringType(), True),
     ]
 )
 
@@ -98,6 +100,8 @@ def _build_facts(
         how="left",
     )
 
+    if "source_type" not in silver.columns:
+        silver = silver.withColumn("source_type", F.lit("simulator"))
     return silver.filter(F.col("metric_key").isNotNull()).select(
         F.col("patient_key"),
         F.col("metric_key"),
@@ -112,6 +116,7 @@ def _build_facts(
         F.col("metric_value").cast(DoubleType()).alias("value"),
         F.col("is_valid"),
         F.col("is_late_arriving"),
+        F.col("source_type"),
     )
 
 

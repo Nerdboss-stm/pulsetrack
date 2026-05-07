@@ -140,6 +140,7 @@ def build_event(user: dict, device: dict, metrics: dict, ts: datetime) -> dict:
         "battery_pct": random.randint(5, 100),
         "event_timestamp": int(event_ts.timestamp() * 1000),
         "sync_timestamp": int(ts.timestamp() * 1000),
+        "source_type": "simulator",
     }
 
 

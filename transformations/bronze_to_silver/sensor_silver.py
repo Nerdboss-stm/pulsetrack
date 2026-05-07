@@ -80,6 +80,7 @@ def parse_and_explode(bronze: DataFrame) -> DataFrame:
         F.col("decoded.metrics").alias("metrics_map"),
         F.col("decoded.event_timestamp").alias("event_timestamp"),
         F.col("decoded.sync_timestamp").alias("sync_timestamp"),
+        F.coalesce(F.col("decoded.source_type"), F.lit("simulator")).alias("source_type"),
         F.col("ingestion_timestamp"),
     )
     return parsed.select(
@@ -92,6 +93,7 @@ def parse_and_explode(bronze: DataFrame) -> DataFrame:
         F.col("battery_pct"),
         F.col("event_timestamp"),
         F.col("sync_timestamp"),
+        F.col("source_type"),
         F.col("ingestion_timestamp"),
         F.explode_outer("metrics_map").alias("metric_name", "metric_value"),
     )

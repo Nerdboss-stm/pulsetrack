@@ -23,6 +23,15 @@
     {"name": "firmware_version", "type": "string"},
     {"name": "battery_pct", "type": "int"},
     {"name": "event_timestamp", "type": {"type": "long", "logicalType": "timestamp-millis"}},
-    {"name": "sync_timestamp", "type": {"type": "long", "logicalType": "timestamp-millis"}}
+    {"name": "sync_timestamp", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {
+      "name": "source_type",
+      "type": {
+        "type": "enum",
+        "name": "SourceType",
+        "symbols": ["simulator", "whoop_api", "openfda"]
+      },
+      "default": "simulator"
+    }
   ]
 }
