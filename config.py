@@ -59,6 +59,21 @@ class Settings(BaseSettings):
     pharmacy_changes_per_minute: int = 5
     user_count: int = 100
 
+    # ── WHOOP API ───────────────────────────────────────────────────────
+    whoop_client_id: str = ""
+    whoop_client_secret: str = ""
+    whoop_redirect_uri: str = "http://localhost:8765/callback"
+    whoop_oauth_authorize_url: str = "https://api.prod.whoop.com/oauth/oauth2/auth"
+    whoop_oauth_token_url: str = "https://api.prod.whoop.com/oauth/oauth2/token"
+    whoop_api_base_url: str = "https://api.prod.whoop.com/developer"
+    whoop_token_path: str = "~/.whoop_tokens.json"
+    whoop_offsets_path: str = "~/.whoop_poll_offsets.json"
+    whoop_account_id: str = ""
+    whoop_user_email: str = ""
+    whoop_poll_interval_seconds: int = 900
+    whoop_backfill_days: int = 30
+    whoop_oauth_scopes: str = "read:recovery read:sleep read:workout read:cycles read:body_measurement read:profile offline"
+
     # ── Prometheus metrics ports (one per process to avoid collision) ───
     metrics_port_wearable: int = 8000
     metrics_port_bronze_sensor: int = 8001
