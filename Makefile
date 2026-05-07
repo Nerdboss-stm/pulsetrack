@@ -30,7 +30,7 @@ generate-vitals:
 # ── Streaming wearable path (Bronze → Silver → Gold facts) ─────────────────
 stream-bronze:
 	python streaming/bronze_ingestion.py &
-	python streaming/pharmacy_bronze_ingestion.py &  # TODO: implement
+	python streaming/pharmacy_bronze_ingestion.py &
 
 stream-silver:
 	python transformations/bronze_to_silver/sensor_silver.py --mode=streaming &
@@ -42,7 +42,7 @@ stream-gold:
 # ── Batch path (EHR + identity + dims) ──────────────────────────────────────
 batch-silver:
 	python transformations/bronze_to_silver/ehr_silver.py
-	python transformations/bronze_to_silver/pharmacy_silver.py  # TODO: implement
+	python transformations/bronze_to_silver/pharmacy_silver.py --mode=batch
 
 identity:
 	python transformations/identity_resolution/patient_identity_bridge.py
