@@ -72,7 +72,10 @@ class Settings(BaseSettings):
     whoop_user_email: str = ""
     whoop_poll_interval_seconds: int = 900
     whoop_backfill_days: int = 30
-    whoop_oauth_scopes: str = "read:recovery read:sleep read:workout read:cycles read:body_measurement read:profile offline"
+    whoop_oauth_scopes: str = (
+        "read:recovery read:sleep read:workout read:cycles "
+        "read:body_measurement read:profile offline"
+    )
 
     # ── Prometheus metrics ports (one per process to avoid collision) ───
     metrics_port_wearable: int = 8000

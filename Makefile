@@ -1,5 +1,6 @@
 .PHONY: setup lint test \
         generate-ehr generate-fda generate-vitals \
+        whoop-auth whoop-poll \
         stream-bronze stream-silver stream-gold \
         batch-silver identity batch-gold \
         compact quality all clean \
@@ -26,6 +27,13 @@ generate-fda:
 
 generate-vitals:
 	python data_generators/wearable_generator.py &
+
+# ── WHOOP API connector ────────────────────────────────────────────────────
+whoop-auth:
+	python -c "from data_generators.whoop_api.auth import authorize_interactive; authorize_interactive()"
+
+whoop-poll:
+	python data_generators/whoop_api/producer.py &
 
 # ── Streaming wearable path (Bronze → Silver → Gold facts) ─────────────────
 stream-bronze:

@@ -205,8 +205,48 @@ def load_bridge(bridge_df: DataFrame, spark: SparkSession):
     log.info("patient_identity_bridge merged")
 
 
+# ── Phase 0: Seed the user's WHOOP identity (when configured) ───────────────
+def build_whoop_user_seed(spark: SparkSession) -> Optional[DataFrame]:
+    """
+    Seed bridge rows for the operator's own WHOOP account so their personal
+    data flows through the identity bridge to the same patient_key as their
+    EHR rows. Two rows: email and device_account_id, both pre-linked.
+
+    Returns None if WHOOP user identity isn't configured.
+    """
+    if not (settings.whoop_account_id and settings.whoop_user_email):
+        return None
+
+    rows = [(settings.whoop_user_email, settings.whoop_account_id)]
+    df = spark.createDataFrame(rows, ["patient_email", "device_account_id"])
+    df = df.withColumn("patient_key", F.sha2(F.lower(F.trim(F.col("patient_email"))), 256))
+    email_row = df.select(
+        F.col("patient_key"),
+        F.lit("email").alias("identifier_type"),
+        F.col("patient_email").alias("identifier_value"),
+        F.lit("whoop_user_seed").alias("source"),
+        F.lit("linked").alias("link_status"),
+        F.lit("operator_seed").alias("match_method"),
+    )
+    device_row = df.select(
+        F.col("patient_key"),
+        F.lit("device_account_id").alias("identifier_type"),
+        F.col("device_account_id").alias("identifier_value"),
+        F.lit("whoop_user_seed").alias("source"),
+        F.lit("linked").alias("link_status"),
+        F.lit("operator_seed").alias("match_method"),
+    )
+    return email_row.unionByName(device_row)
+
+
 # ── Orchestration ───────────────────────────────────────────────────────────
 def run_identity_bridge(spark: SparkSession):
+    # Phase 0: Seed the operator's own WHOOP identity (if configured).
+    whoop_seed = build_whoop_user_seed(spark)
+    if whoop_seed is not None:
+        log.info("Phase 0: Seeding operator WHOOP identity")
+        load_bridge(whoop_seed, spark)
+
     # Phase 1: EHR rows must land first so phase 2 can read them.
     log.info("Phase 1: Building EHR identities")
     ehr_df = build_ehr_identities(spark)
