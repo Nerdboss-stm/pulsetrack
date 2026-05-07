@@ -1,11 +1,9 @@
 """maintenance.compaction smoke tests — table list shape and skip semantics."""
+
 from __future__ import annotations
 
 import os
 import sys
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -42,8 +40,9 @@ def test_table_properties_contain_user_spec_values():
 
 
 def test_maintain_table_skips_when_path_is_not_delta(spark, tmp_lakehouse):
-    from maintenance import compaction
     from delta.tables import DeltaTable
+
+    from maintenance import compaction
 
     nonexistent = str(tmp_lakehouse / "no_such_table")
     # No exception — silent skip

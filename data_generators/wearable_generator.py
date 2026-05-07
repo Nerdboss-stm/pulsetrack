@@ -10,6 +10,7 @@ that values evolve plausibly over time rather than jittering randomly.
 
 For an offline / no-registry alternative, see ``data_generators/synthetic/``.
 """
+
 from __future__ import annotations
 
 import os
@@ -27,7 +28,7 @@ from confluent_kafka.serialization import (
 )
 from faker import Faker
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import settings  # noqa: E402
 from data_generators.vitals_model import (  # noqa: E402
     ActivityState,
@@ -55,9 +56,9 @@ fake = Faker()
 # Device → metric subset. Keys must align with sensor_reading.avsc DeviceType
 # enum: smartwatch, chest_strap, sleep_ring, blood_pressure_cuff.
 DEVICE_METRICS: dict[str, list[str]] = {
-    "smartwatch":          ["heart_rate_bpm", "spo2_pct", "hrv_ms", "skin_temp_celsius", "steps_since_last"],
-    "chest_strap":         ["heart_rate_bpm", "hrv_ms", "respiration_rate"],
-    "sleep_ring":          ["heart_rate_bpm", "spo2_pct", "skin_temp_celsius", "sleep_stage"],
+    "smartwatch": ["heart_rate_bpm", "spo2_pct", "hrv_ms", "skin_temp_celsius", "steps_since_last"],
+    "chest_strap": ["heart_rate_bpm", "hrv_ms", "respiration_rate"],
+    "sleep_ring": ["heart_rate_bpm", "spo2_pct", "skin_temp_celsius", "sleep_stage"],
     "blood_pressure_cuff": ["bp_systolic_mmhg", "bp_diastolic_mmhg"],
 }
 
@@ -77,7 +78,9 @@ def make_user(account_id: str) -> dict:
         {
             "device_id": f"{DEVICE_PREFIX[t]}-{fake.bothify('???-#####').upper()}",
             "device_type": t,
-            "firmware_version": f"{random.randint(2, 4)}.{random.randint(0, 9)}.{random.randint(0, 9)}",
+            "firmware_version": (
+                f"{random.randint(2, 4)}.{random.randint(0, 9)}.{random.randint(0, 9)}"
+            ),
         }
         for t in chosen
     ]
@@ -157,26 +160,30 @@ def main(num_users: int = 100, metrics_port: int = 8000):
     serializer = get_avro_serializer(subject)
     key_serializer = StringSerializer()
 
-    producer = Producer({
-        "bootstrap.servers": settings.kafka_bootstrap,
-        "acks": "all",
-        "enable.idempotence": True,
-        "compression.type": "lz4",
-        "linger.ms": 50,
-    })
+    producer = Producer(
+        {
+            "bootstrap.servers": settings.kafka_bootstrap,
+            "acks": "all",
+            "enable.idempotence": True,
+            "compression.type": "lz4",
+            "linger.ms": 50,
+        }
+    )
 
     users = [make_user(f"acct_{i:05d}") for i in range(num_users)]
     total_devices = sum(len(u["devices"]) for u in users)
     log.info(
         "Wearable generator (real) started",
-        extra={"extra_data": {
-            "users": len(users),
-            "devices": total_devices,
-            "topic": settings.kafka_topic_sensor,
-            "schema_registry": settings.schema_registry_url,
-            "events_per_second": settings.wearable_events_per_second,
-            "metrics_port": metrics_port,
-        }},
+        extra={
+            "extra_data": {
+                "users": len(users),
+                "devices": total_devices,
+                "topic": settings.kafka_topic_sensor,
+                "schema_registry": settings.schema_registry_url,
+                "events_per_second": settings.wearable_events_per_second,
+                "metrics_port": metrics_port,
+            }
+        },
     )
 
     sent = 0
@@ -209,7 +216,9 @@ def main(num_users: int = 100, metrics_port: int = 8000):
                 records_processed.labels(layer="bronze", source="wearable").inc()
             except Exception:
                 errors += 1
-                records_failed.labels(layer="bronze", source="wearable", reason="serialize_error").inc()
+                records_failed.labels(
+                    layer="bronze", source="wearable", reason="serialize_error"
+                ).inc()
                 log.error("Serialize/produce failed", exc_info=True)
 
             producer.poll(0)
@@ -219,11 +228,13 @@ def main(num_users: int = 100, metrics_port: int = 8000):
                 rate = sent / (now - last_log_at) if (now - last_log_at) > 0 else 0
                 log.info(
                     "Producer progress",
-                    extra={"extra_data": {
-                        "sent": sent,
-                        "errors": errors,
-                        "events_per_second": round(rate, 2),
-                    }},
+                    extra={
+                        "extra_data": {
+                            "sent": sent,
+                            "errors": errors,
+                            "events_per_second": round(rate, 2),
+                        }
+                    },
                 )
                 last_log_at = now
                 sent = 0  # rate-window counter

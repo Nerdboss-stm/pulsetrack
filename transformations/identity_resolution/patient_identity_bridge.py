@@ -18,6 +18,7 @@ Phases (executed in order so each phase can read what the previous one wrote):
 
 4. Resolution metrics — log linkage KPIs.
 """
+
 from __future__ import annotations
 
 import os
@@ -29,7 +30,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import StringType
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import settings  # noqa: E402
 from data_quality.identity_metrics import compute_resolution_metrics  # noqa: E402
 from logger import get_logger  # noqa: E402
@@ -40,18 +41,21 @@ log = get_logger(__name__)
 # ── Phase 1: EHR identities ─────────────────────────────────────────────────
 def build_ehr_identities(spark: SparkSession) -> DataFrame:
     """Union (patient_id, patient_email) from EHR conditions + medications."""
-    conditions = spark.read.format("delta") \
-        .load(settings.silver_ehr_conditions) \
-        .select("patient_id", "patient_email") \
+    conditions = (
+        spark.read.format("delta")
+        .load(settings.silver_ehr_conditions)
+        .select("patient_id", "patient_email")
         .filter(F.col("patient_id").isNotNull())
+    )
 
-    medications = spark.read.format("delta") \
-        .load(settings.silver_ehr_medications) \
-        .select("patient_id", "patient_email") \
+    medications = (
+        spark.read.format("delta")
+        .load(settings.silver_ehr_medications)
+        .select("patient_id", "patient_email")
         .filter(F.col("patient_id").isNotNull())
+    )
 
-    ehr_identities = conditions.union(medications) \
-        .dropDuplicates(["patient_id", "patient_email"])
+    ehr_identities = conditions.union(medications).dropDuplicates(["patient_id", "patient_email"])
 
     return ehr_identities.withColumn(
         "patient_key",
@@ -77,9 +81,8 @@ def build_ehr_bridge_rows(ehr_df: DataFrame) -> DataFrame:
         F.lit("linked").alias("link_status"),
         F.lit("exact_mrn_email").alias("match_method"),
     )
-    return (
-        mrn_rows.union(email_rows)
-        .dropDuplicates(["patient_key", "identifier_type", "identifier_value"])
+    return mrn_rows.union(email_rows).dropDuplicates(
+        ["patient_key", "identifier_type", "identifier_value"]
     )
 
 
@@ -94,14 +97,16 @@ def build_device_bridge_rows(spark: SparkSession) -> DataFrame:
     Must be called AFTER the EHR bridge rows have been written.
     """
     devices = (
-        spark.read.format("delta").load(settings.silver_sensor)
+        spark.read.format("delta")
+        .load(settings.silver_sensor)
         .select("device_account_id", "patient_email")
         .filter(F.col("device_account_id").isNotNull())
         .distinct()
     )
 
     ehr_emails = (
-        spark.read.format("delta").load(settings.silver_identity_bridge)
+        spark.read.format("delta")
+        .load(settings.silver_identity_bridge)
         .filter(F.col("identifier_type") == "email")
         .select(
             F.col("identifier_value").alias("patient_email"),
@@ -117,9 +122,11 @@ def build_device_bridge_rows(spark: SparkSession) -> DataFrame:
         F.col("device_account_id").alias("identifier_value"),
         F.lit("wearable").alias("source"),
         F.when(F.col("patient_key").isNotNull(), F.lit("linked"))
-         .otherwise(F.lit("pending_registration")).alias("link_status"),
+        .otherwise(F.lit("pending_registration"))
+        .alias("link_status"),
         F.when(F.col("patient_key").isNotNull(), F.lit("exact_email_match"))
-         .otherwise(F.lit("none")).alias("match_method"),
+        .otherwise(F.lit("none"))
+        .alias("match_method"),
     )
 
 
@@ -171,9 +178,8 @@ def build_pharmacy_bridge_rows(spark: SparkSession) -> Optional[DataFrame]:
 
 # ── Bridge sink ─────────────────────────────────────────────────────────────
 def load_bridge(bridge_df: DataFrame, spark: SparkSession):
-    bridge_df = (
-        bridge_df.withColumn("first_seen", F.current_timestamp())
-        .withColumn("last_seen", F.current_timestamp())
+    bridge_df = bridge_df.withColumn("first_seen", F.current_timestamp()).withColumn(
+        "last_seen", F.current_timestamp()
     )
 
     if not DeltaTable.isDeltaTable(spark, settings.silver_identity_bridge):
@@ -188,11 +194,13 @@ def load_bridge(bridge_df: DataFrame, spark: SparkSession):
         bridge_df.alias("new"),
         """bridge.identifier_type  = new.identifier_type
            AND bridge.identifier_value = new.identifier_value""",
-    ).whenMatchedUpdate(set={
-        "last_seen":    "new.last_seen",
-        "link_status":  "new.link_status",
-        "patient_key":  "new.patient_key",
-    }).whenNotMatchedInsertAll().execute()
+    ).whenMatchedUpdate(
+        set={
+            "last_seen": "new.last_seen",
+            "link_status": "new.link_status",
+            "patient_key": "new.patient_key",
+        }
+    ).whenNotMatchedInsertAll().execute()
     log.info("patient_identity_bridge merged")
 
 

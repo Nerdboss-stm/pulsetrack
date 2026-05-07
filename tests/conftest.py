@@ -8,6 +8,7 @@ Usage:
 Spark-heavy tests should declare ``spark`` as a parameter; the session
 fixture is shared so we only pay the JVM startup cost once per test run.
 """
+
 from __future__ import annotations
 
 import os
@@ -22,6 +23,7 @@ def _have_spark() -> bool:
     try:
         import pyspark  # noqa: F401
         from delta import configure_spark_with_delta_pip  # noqa: F401
+
         return True
     except Exception:
         return False
@@ -50,14 +52,13 @@ def spark():
         pytest.skip("Delta JARs not cached at ~/.ivy2/jars")
 
     builder = (
-        SparkSession.builder
-        .appName("PulseTrack-tests")
+        SparkSession.builder.appName("PulseTrack-tests")
         .master("local[2]")
         .config("spark.jars", ",".join(delta_jars))
-        .config("spark.sql.extensions",
-                "io.delta.sql.DeltaSparkSessionExtension")
-        .config("spark.sql.catalog.spark_catalog",
-                "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config(
+            "spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+        )
         .config("spark.databricks.delta.schema.autoMerge.enabled", "true")
         .config("spark.driver.memory", "1g")
         .config("spark.sql.shuffle.partitions", "2")
@@ -70,9 +71,15 @@ def spark():
 
 
 _PROJECT_PREFIXES = (
-    "config", "logger", "metrics",
-    "data_quality", "streaming", "transformations",
-    "data_generators", "schemas", "utils",
+    "config",
+    "logger",
+    "metrics",
+    "data_quality",
+    "streaming",
+    "transformations",
+    "data_generators",
+    "schemas",
+    "utils",
 )
 
 
@@ -113,9 +120,13 @@ def tmp_lakehouse(tmp_path, monkeypatch):
 @pytest.fixture
 def fresh_settings(monkeypatch):
     """Reload config with whatever env vars the caller sets via monkeypatch."""
+
     def _reload():
         import importlib
+
         import config as cfg
+
         importlib.reload(cfg)
         return cfg.settings
+
     return _reload

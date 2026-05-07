@@ -1,11 +1,11 @@
 """Identity bridge: transitive device linkage, MERGE idempotency, NULL handling."""
+
 from __future__ import annotations
 
 import os
 import sys
 
 import pytest
-from pyspark.sql import functions as F
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -37,6 +37,7 @@ def test_build_ehr_identities_unions_conditions_and_medications(spark, tmp_lakeh
     from transformations.identity_resolution.patient_identity_bridge import (
         build_ehr_identities,
     )
+
     _seed_silver_ehr(spark, tmp_lakehouse)
     out = build_ehr_identities(spark).collect()
     emails = {r["patient_email"] for r in out}
@@ -47,8 +48,10 @@ def test_build_ehr_identities_unions_conditions_and_medications(spark, tmp_lakeh
 @pytest.mark.usefixtures("tmp_lakehouse")
 def test_build_ehr_bridge_rows_emits_two_rows_per_patient(spark, tmp_lakehouse):
     from transformations.identity_resolution.patient_identity_bridge import (
-        build_ehr_bridge_rows, build_ehr_identities,
+        build_ehr_bridge_rows,
+        build_ehr_identities,
     )
+
     _seed_silver_ehr(spark, tmp_lakehouse)
     bridge = build_ehr_bridge_rows(build_ehr_identities(spark))
     rows = bridge.collect()
@@ -60,15 +63,21 @@ def test_build_ehr_bridge_rows_emits_two_rows_per_patient(spark, tmp_lakehouse):
 def test_device_bridge_links_via_email(spark, tmp_lakehouse):
     """If a device's email matches an EHR email, status becomes 'linked'."""
     from transformations.identity_resolution.patient_identity_bridge import (
-        build_device_bridge_rows, build_ehr_bridge_rows, build_ehr_identities,
+        build_device_bridge_rows,
+        build_ehr_bridge_rows,
+        build_ehr_identities,
         load_bridge,
     )
+
     _seed_silver_ehr(spark, tmp_lakehouse)
-    _seed_silver_sensor(spark, [
-        ("acct_known", "alice@example.com"),  # matches EHR
-        ("acct_unknown", "stranger@example.com"),  # no match
-        ("acct_no_email", None),  # no email at all
-    ])
+    _seed_silver_sensor(
+        spark,
+        [
+            ("acct_known", "alice@example.com"),  # matches EHR
+            ("acct_unknown", "stranger@example.com"),  # no match
+            ("acct_no_email", None),  # no email at all
+        ],
+    )
     # Phase 1: write EHR bridge rows
     load_bridge(build_ehr_bridge_rows(build_ehr_identities(spark)), spark)
     # Phase 2: device rows look up email in bridge
@@ -85,8 +94,11 @@ def test_load_bridge_is_idempotent(spark, tmp_lakehouse):
     """Calling load_bridge twice with the same rows must not duplicate."""
     from config import settings
     from transformations.identity_resolution.patient_identity_bridge import (
-        build_ehr_bridge_rows, build_ehr_identities, load_bridge,
+        build_ehr_bridge_rows,
+        build_ehr_identities,
+        load_bridge,
     )
+
     _seed_silver_ehr(spark, tmp_lakehouse)
     bridge_rows = build_ehr_bridge_rows(build_ehr_identities(spark))
     load_bridge(bridge_rows, spark)
@@ -101,5 +113,6 @@ def test_pharmacy_bridge_returns_none_when_bronze_missing(spark, tmp_lakehouse):
     from transformations.identity_resolution.patient_identity_bridge import (
         build_pharmacy_bridge_rows,
     )
+
     out = build_pharmacy_bridge_rows(spark)
     assert out is None

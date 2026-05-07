@@ -5,6 +5,7 @@ Import the instruments and increment/observe them at the relevant boundaries
 in pipeline code. Call `start_metrics_server(port)` once per process to expose
 /metrics for scraping.
 """
+
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
 # ── Counters ────────────────────────────────────────────────────────────

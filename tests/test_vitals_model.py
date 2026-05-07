@@ -1,7 +1,7 @@
 """Tests for the physiological vitals simulator."""
+
 from __future__ import annotations
 
-import math
 import random
 from datetime import datetime
 
@@ -39,8 +39,12 @@ def test_patient_profile_random_in_realistic_ranges():
 
 def test_activity_delta_tables_internally_consistent():
     """Higher activity ⇒ higher HR, lower SpO2, lower HRV."""
-    for s in [ActivityState.RESTING, ActivityState.LIGHT_ACTIVITY,
-              ActivityState.MODERATE_EXERCISE, ActivityState.VIGOROUS_EXERCISE]:
+    for s in [
+        ActivityState.RESTING,
+        ActivityState.LIGHT_ACTIVITY,
+        ActivityState.MODERATE_EXERCISE,
+        ActivityState.VIGOROUS_EXERCISE,
+    ]:
         assert ACTIVITY_HR_DELTA[s] >= ACTIVITY_HR_DELTA[ActivityState.RESTING]
         assert ACTIVITY_SPO2_DELTA[s] <= 0
         assert ACTIVITY_HRV_DELTA[s] <= ACTIVITY_HRV_DELTA[ActivityState.RESTING]
@@ -67,8 +71,13 @@ def test_generate_reading_clamps_to_physio_ranges():
 
 def test_circadian_hr_lower_at_night_higher_at_afternoon():
     p = PatientProfile(
-        patient_id="p1", age=30, sex="M",
-        resting_hr=70, resting_spo2=97, resting_hrv=50, resting_temp=36.8,
+        patient_id="p1",
+        age=30,
+        sex="M",
+        resting_hr=70,
+        resting_spo2=97,
+        resting_hrv=50,
+        resting_temp=36.8,
         anomaly_rate=0.0,
     )
     night_hrs = []
@@ -102,12 +111,15 @@ def test_anomaly_disabled_means_no_anomalies():
 
 def test_respiration_rate_increases_with_activity():
     rr_rest = sum(respiration_rate(ActivityState.RESTING) for _ in range(20)) / 20
-    rr_vig  = sum(respiration_rate(ActivityState.VIGOROUS_EXERCISE) for _ in range(20)) / 20
+    rr_vig = sum(respiration_rate(ActivityState.VIGOROUS_EXERCISE) for _ in range(20)) / 20
     assert rr_vig > rr_rest
 
 
 def test_steps_for_state_zero_at_rest_positive_during_exercise():
-    assert steps_for_state(ActivityState.SLEEPING, 60) == 0 or steps_for_state(ActivityState.SLEEPING, 60) >= 0
+    assert (
+        steps_for_state(ActivityState.SLEEPING, 60) == 0
+        or steps_for_state(ActivityState.SLEEPING, 60) >= 0
+    )
     avg = sum(steps_for_state(ActivityState.MODERATE_EXERCISE, 60) for _ in range(10)) / 10
     assert avg > 0
 

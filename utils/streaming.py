@@ -6,14 +6,14 @@ once after a streaming query starts so SIGTERM/SIGINT triggers an orderly
 ``query.stop()`` and (optional) ``spark.stop()`` rather than a hard kill that
 leaves the checkpoint half-written.
 """
+
 from __future__ import annotations
 
 import os
 import signal
 import sys
-from typing import Optional
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from logger import get_logger  # noqa: E402
 
 log = get_logger(__name__)
@@ -21,6 +21,7 @@ log = get_logger(__name__)
 
 def setup_graceful_shutdown(query, spark=None) -> None:
     """Install SIGTERM and SIGINT handlers that stop the streaming query."""
+
     def handler(signum, _frame):
         log.info(
             "Received shutdown signal, stopping streaming query",

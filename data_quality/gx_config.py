@@ -21,6 +21,7 @@ runtime API may diverge slightly from the public docs we wrap calls in
 narrow try/except blocks and fall back to a no-op success so a transient GX
 internal error never takes the pipeline down.
 """
+
 from __future__ import annotations
 
 import os
@@ -29,7 +30,7 @@ from typing import Callable, Dict
 
 import great_expectations as gx
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from logger import get_logger  # noqa: E402
 from metrics import records_failed  # noqa: E402
 
@@ -52,9 +53,11 @@ def get_context():
 
 def register_suite(name: str):
     """Decorator: register a no-arg callable that returns an ExpectationSuite."""
+
     def deco(builder: Callable):
         SUITE_BUILDERS[name] = builder
         return builder
+
     return deco
 
 
@@ -95,12 +98,14 @@ def validate(df, suite_name: str, layer: str, source: str) -> bool:
     except Exception as exc:
         log.error(
             "GX runtime error — gate skipped",
-            extra={"extra_data": {
-                "suite": suite_name,
-                "layer": layer,
-                "source": source,
-                "error": str(exc),
-            }},
+            extra={
+                "extra_data": {
+                    "suite": suite_name,
+                    "layer": layer,
+                    "source": source,
+                    "error": str(exc),
+                }
+            },
         )
         records_failed.labels(layer=layer, source=source, reason="gx_runtime").inc()
         return True
@@ -117,21 +122,29 @@ def validate(df, suite_name: str, layer: str, source: str) -> bool:
     if success:
         log.info(
             "GX quality gate passed",
-            extra={"extra_data": {
-                "suite": suite_name, "layer": layer, "source": source,
-            }},
+            extra={
+                "extra_data": {
+                    "suite": suite_name,
+                    "layer": layer,
+                    "source": source,
+                }
+            },
         )
     else:
         log.error(
             "GX quality gate FAILED",
-            extra={"extra_data": {
-                "suite": suite_name,
-                "layer": layer,
-                "source": source,
-                "result": payload,
-            }},
+            extra={
+                "extra_data": {
+                    "suite": suite_name,
+                    "layer": layer,
+                    "source": source,
+                    "result": payload,
+                }
+            },
         )
         records_failed.labels(
-            layer=layer, source=source, reason="quality_gate",
+            layer=layer,
+            source=source,
+            reason="quality_gate",
         ).inc()
     return success

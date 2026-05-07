@@ -8,6 +8,7 @@ Each suite reads its source table, projects to the column shape the suite
 expects, and runs validate(). Exits with code 1 if any suite fails so it can
 gate downstream steps in CI.
 """
+
 from __future__ import annotations
 
 import os
@@ -20,14 +21,20 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import settings  # noqa: E402
 from data_quality.expectations.bronze_sensor_suite import (  # noqa: E402
     SUITE_NAME as BRONZE_SUITE,
+)
+from data_quality.expectations.bronze_sensor_suite import (
     prepare_for_validation as prepare_bronze,
 )
 from data_quality.expectations.gold_vitals_suite import (  # noqa: E402
     SUITE_NAME as GOLD_SUITE,
+)
+from data_quality.expectations.gold_vitals_suite import (
     prepare_for_validation as prepare_gold,
 )
 from data_quality.expectations.silver_sensor_suite import (  # noqa: E402
     SUITE_NAME as SILVER_SUITE,
+)
+from data_quality.expectations.silver_sensor_suite import (
     prepare_for_validation as prepare_silver,
 )
 from data_quality.gx_config import get_context, validate  # noqa: E402
@@ -39,9 +46,9 @@ log = get_logger(__name__)
 Audit = tuple[str, str, str, str, Callable]
 AUDITS: list[Audit] = [
     # (suite_name, layer label, source label, table path, projection fn)
-    (BRONZE_SUITE, "bronze", "sensor",      settings.bronze_sensor,           prepare_bronze),
-    (SILVER_SUITE, "silver", "sensor",      settings.silver_sensor,           prepare_silver),
-    (GOLD_SUITE,   "gold",   "vital_daily", settings.gold_fact_vital_daily,   prepare_gold),
+    (BRONZE_SUITE, "bronze", "sensor", settings.bronze_sensor, prepare_bronze),
+    (SILVER_SUITE, "silver", "sensor", settings.silver_sensor, prepare_silver),
+    (GOLD_SUITE, "gold", "vital_daily", settings.gold_fact_vital_daily, prepare_gold),
 ]
 
 

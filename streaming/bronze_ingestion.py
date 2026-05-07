@@ -14,6 +14,7 @@ Backpressure: ``maxOffsetsPerTrigger`` from settings. Checkpoints under
 ``settings.checkpoint_bronze_sensor``. SIGTERM/SIGINT trigger a graceful
 ``query.stop()`` so the checkpoint is left consistent.
 """
+
 from __future__ import annotations
 
 import os
@@ -25,10 +26,12 @@ from pyspark.sql import functions as F
 from pyspark.sql.avro.functions import from_avro
 from pyspark.sql.types import StringType
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import settings  # noqa: E402
 from data_quality.expectations.bronze_sensor_suite import (  # noqa: E402
     SUITE_NAME as BRONZE_SUITE,
+)
+from data_quality.expectations.bronze_sensor_suite import (
     prepare_for_validation as prepare_bronze,
 )
 from data_quality.gx_config import validate as gx_validate  # noqa: E402
@@ -52,28 +55,26 @@ QUERY_NAME = "bronze-sensor-readings"
 def _decode_envelope(kafka_df: DataFrame, schema_str: str) -> DataFrame:
     """Strip the Confluent wire prefix (1 magic + 4 schema-id) and decode Avro."""
     avro_payload = F.expr("substring(value, 6, length(value) - 5)")
-    return (
-        kafka_df.select(
-            F.col("value").alias("raw_avro_bytes"),
-            F.col("topic").alias("kafka_topic"),
-            F.col("partition").alias("kafka_partition"),
-            F.col("offset").alias("kafka_offset"),
-            F.col("timestamp").alias("kafka_timestamp"),
-            F.col("key").cast(StringType()).alias("kafka_key"),
-            F.current_timestamp().alias("ingestion_timestamp"),
-            F.date_format(F.current_timestamp(), "yyyy-MM-dd").alias("ingestion_date"),
-            F.date_format(F.current_timestamp(), "HH").alias("ingestion_hour"),
-            from_avro(avro_payload, schema_str, {"mode": "PERMISSIVE"}).alias("decoded"),
-        )
-        .withColumn(
-            "is_parseable",
-            F.col("decoded").isNotNull() & F.col("decoded.reading_id").isNotNull(),
-        )
+    return kafka_df.select(
+        F.col("value").alias("raw_avro_bytes"),
+        F.col("topic").alias("kafka_topic"),
+        F.col("partition").alias("kafka_partition"),
+        F.col("offset").alias("kafka_offset"),
+        F.col("timestamp").alias("kafka_timestamp"),
+        F.col("key").cast(StringType()).alias("kafka_key"),
+        F.current_timestamp().alias("ingestion_timestamp"),
+        F.date_format(F.current_timestamp(), "yyyy-MM-dd").alias("ingestion_date"),
+        F.date_format(F.current_timestamp(), "HH").alias("ingestion_hour"),
+        from_avro(avro_payload, schema_str, {"mode": "PERMISSIVE"}).alias("decoded"),
+    ).withColumn(
+        "is_parseable",
+        F.col("decoded").isNotNull() & F.col("decoded.reading_id").isNotNull(),
     )
 
 
 def _make_batch_processor(dlq: DLQHandler):
     """foreachBatch closure: write Bronze, route failures to DLQ, update metrics."""
+
     def process(batch_df: DataFrame, batch_id: int) -> None:
         if batch_df.rdd.isEmpty():
             return
@@ -109,7 +110,9 @@ def _make_batch_processor(dlq: DLQHandler):
                 error_message="Schema Registry payload failed Avro decoding",
             )
             records_failed.labels(
-                layer="bronze", source="sensor", reason="avro_parse",
+                layer="bronze",
+                source="sensor",
+                reason="avro_parse",
             ).inc(invalid)
 
         # Informative quality gate — Bronze is the source of truth, so we
@@ -125,11 +128,13 @@ def _make_batch_processor(dlq: DLQHandler):
         cached.unpersist()
         log.info(
             "Bronze batch processed",
-            extra={"extra_data": {
-                "batch_id": batch_id,
-                "valid": valid,
-                "invalid": invalid,
-            }},
+            extra={
+                "extra_data": {
+                    "batch_id": batch_id,
+                    "valid": valid,
+                    "invalid": invalid,
+                }
+            },
         )
 
     return process
@@ -146,14 +151,16 @@ def run_wearable_bronze(
 
     log.info(
         "PulseTrack Wearable → Bronze ingestion starting",
-        extra={"extra_data": {
-            "source_topic": settings.kafka_topic_sensor,
-            "kafka_bootstrap": settings.kafka_bootstrap,
-            "schema_registry": settings.schema_registry_url,
-            "sink": settings.bronze_sensor,
-            "checkpoint": settings.checkpoint_bronze_sensor,
-            "max_offsets_per_trigger": settings.max_offsets_per_trigger,
-        }},
+        extra={
+            "extra_data": {
+                "source_topic": settings.kafka_topic_sensor,
+                "kafka_bootstrap": settings.kafka_bootstrap,
+                "schema_registry": settings.schema_registry_url,
+                "sink": settings.bronze_sensor,
+                "checkpoint": settings.checkpoint_bronze_sensor,
+                "max_offsets_per_trigger": settings.max_offsets_per_trigger,
+            }
+        },
     )
 
     kafka_df = (
@@ -168,8 +175,7 @@ def run_wearable_bronze(
     bronze_df = _decode_envelope(kafka_df, schema_str)
 
     query = (
-        bronze_df.writeStream
-        .foreachBatch(_make_batch_processor(dlq))
+        bronze_df.writeStream.foreachBatch(_make_batch_processor(dlq))
         .option("checkpointLocation", settings.checkpoint_bronze_sensor)
         .trigger(processingTime=settings.trigger_interval)
         .queryName(QUERY_NAME)

@@ -5,16 +5,17 @@ Call :func:`compute_resolution_metrics` after each bridge run to publish a
 single structured-log line summarizing linkage health. The metrics are also
 exposed as Prometheus gauges so dashboards can track drift over time.
 """
+
 from __future__ import annotations
 
 import os
 import sys
 
+from prometheus_client import Gauge
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
-from prometheus_client import Gauge
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import settings  # noqa: E402
 from logger import get_logger  # noqa: E402
 
@@ -49,10 +50,7 @@ def compute_resolution_metrics(spark: SparkSession) -> dict:
     pending = bridge.filter(F.col("link_status") == "pending_registration").count()
 
     unique_patients = (
-        bridge.filter(F.col("patient_key").isNotNull())
-        .select("patient_key")
-        .distinct()
-        .count()
+        bridge.filter(F.col("patient_key").isNotNull()).select("patient_key").distinct().count()
     )
 
     avg_ids_row = (
@@ -65,9 +63,11 @@ def compute_resolution_metrics(spark: SparkSession) -> dict:
     avg_ids = float(avg_ids_row[0]["avg_ids_per_patient"]) if avg_ids_row else 0.0
 
     breakdown = [
-        row.asDict() for row in
-        bridge.groupBy("identifier_type", "link_status").count()
-              .orderBy("identifier_type", "link_status").collect()
+        row.asDict()
+        for row in bridge.groupBy("identifier_type", "link_status")
+        .count()
+        .orderBy("identifier_type", "link_status")
+        .collect()
     ]
     bridge.unpersist()
 

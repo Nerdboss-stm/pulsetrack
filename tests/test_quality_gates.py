@@ -1,4 +1,5 @@
 """GX integration: registry shape, suite construction, runner pass/fail behavior."""
+
 from __future__ import annotations
 
 import os
@@ -12,14 +13,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # These imports must happen before validate() so suites self-register.
 from data_quality.expectations.bronze_sensor_suite import (  # noqa: E402
     SUITE_NAME as BRONZE,
-    prepare_for_validation as prepare_bronze,
 )
 from data_quality.expectations.gold_vitals_suite import (  # noqa: E402
     SUITE_NAME as GOLD,
+)
+from data_quality.expectations.gold_vitals_suite import (
     prepare_for_validation as prepare_gold,
 )
 from data_quality.expectations.silver_sensor_suite import (  # noqa: E402
     SUITE_NAME as SILVER,
+)
+from data_quality.expectations.silver_sensor_suite import (
     prepare_for_validation as prepare_silver,
 )
 from data_quality.gx_config import SUITE_BUILDERS, get_context, validate  # noqa: E402
@@ -46,9 +50,7 @@ def test_bronze_suite_has_expected_expectations():
 
 def test_silver_suite_validates_unique_metric_pair_column():
     suite = SUITE_BUILDERS[SILVER]()
-    cols = [
-        getattr(e, "column", None) for e in suite.expectations
-    ]
+    cols = [getattr(e, "column", None) for e in suite.expectations]
     assert "reading_metric_key" in cols
 
 
@@ -68,8 +70,14 @@ def test_validate_returns_true_on_clean_silver_batch(spark):
             ("r1", "heart_rate_bpm", 70.0, True, "acct_1", now),
             ("r2", "heart_rate_bpm", 72.0, True, "acct_2", now),
         ],
-        ["reading_id", "metric_name", "metric_value", "is_valid",
-         "device_account_id", "event_timestamp"],
+        [
+            "reading_id",
+            "metric_name",
+            "metric_value",
+            "is_valid",
+            "device_account_id",
+            "event_timestamp",
+        ],
     )
     prepared = prepare_silver(df)
     ok = validate(prepared, suite_name=SILVER, layer="silver", source="sensor")
@@ -83,9 +91,17 @@ def test_validate_returns_true_on_clean_gold_batch(spark):
         [
             (1, 100, 20260503, 70.0, 60.0, 80.0, 100, 5, 95.0),
         ],
-        ["patient_key", "metric_key", "date_key",
-         "avg_value", "min_value", "max_value",
-         "reading_count", "anomaly_count", "pct_in_normal_range"],
+        [
+            "patient_key",
+            "metric_key",
+            "date_key",
+            "avg_value",
+            "min_value",
+            "max_value",
+            "reading_count",
+            "anomaly_count",
+            "pct_in_normal_range",
+        ],
     )
     prepared = prepare_gold(df)
     ok = validate(prepared, suite_name=GOLD, layer="gold", source="vital_daily")

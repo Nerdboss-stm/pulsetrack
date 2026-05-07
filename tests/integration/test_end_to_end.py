@@ -16,14 +16,13 @@ Silver → Gold over the resulting batch, and asserts:
 * Identity bridge has at least one row tagged ``linked``
 * Bronze GX gate completes without raising
 """
+
 from __future__ import annotations
 
 import os
 import sys
-import time
 import uuid
 from datetime import datetime
-from pathlib import Path
 
 import pytest
 
@@ -38,22 +37,27 @@ pytestmark = pytest.mark.skipif(
 def _publish_sample_events(n: int = 100) -> int:
     from confluent_kafka import Producer
     from confluent_kafka.serialization import (
-        MessageField, SerializationContext, StringSerializer,
+        MessageField,
+        SerializationContext,
+        StringSerializer,
     )
 
     from config import settings
     from schemas.registry import (
-        get_avro_serializer, register_all_schemas,
+        get_avro_serializer,
+        register_all_schemas,
     )
 
     register_all_schemas()
     serializer = get_avro_serializer(f"{settings.kafka_topic_sensor}-value")
     key_serializer = StringSerializer()
-    producer = Producer({
-        "bootstrap.servers": settings.kafka_bootstrap,
-        "acks": "all",
-        "enable.idempotence": True,
-    })
+    producer = Producer(
+        {
+            "bootstrap.servers": settings.kafka_bootstrap,
+            "acks": "all",
+            "enable.idempotence": True,
+        }
+    )
 
     sent = 0
     now_ms = int(datetime.utcnow().timestamp() * 1000)
@@ -89,7 +93,9 @@ def _publish_sample_events(n: int = 100) -> int:
 def test_end_to_end_pipeline(tmp_path, monkeypatch):
     monkeypatch.setenv("PT_LAKEHOUSE_BASE", str(tmp_path))
     import importlib
+
     import config
+
     importlib.reload(config)
 
     n = _publish_sample_events(100)
@@ -99,6 +105,7 @@ def test_end_to_end_pipeline(tmp_path, monkeypatch):
     # In a real CI we'd use a separate process; for the test we rely on the
     # batch-mode entrypoint that re-uses the same code path.
     from streaming.bronze_ingestion import run_wearable_bronze
+
     # NOTE: streaming entrypoint is daemon-style. The integration job in
     # ops/scripts handles bring-up/teardown. Here we just assert the local
     # call signature is intact and skip the long-running portion under
@@ -107,6 +114,7 @@ def test_end_to_end_pipeline(tmp_path, monkeypatch):
 
     # Bronze→Silver via the batch entrypoint
     from transformations.bronze_to_silver.sensor_silver import run_batch as silver_batch
+
     # If Bronze hasn't been consumed yet, batch will skip with no rows; the
     # assertion below only runs in the fully-orchestrated CI variant.
     try:
@@ -117,6 +125,7 @@ def test_end_to_end_pipeline(tmp_path, monkeypatch):
     silver = config.settings.silver_sensor
     from delta.tables import DeltaTable
     from pyspark.sql import SparkSession
+
     spark = SparkSession.builder.getOrCreate()
     if not DeltaTable.isDeltaTable(spark, silver):
         pytest.skip("Silver not produced — partial pipeline run")

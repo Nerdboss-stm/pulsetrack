@@ -6,6 +6,7 @@ documents on stdout, suitable for ingest by Loki/Elastic/CloudWatch. To attach
 structured fields to a single record, pass `extra={"extra_data": {...}}` to
 the standard logger methods.
 """
+
 import json
 import logging
 import sys

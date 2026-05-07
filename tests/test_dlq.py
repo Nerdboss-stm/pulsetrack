@@ -1,9 +1,9 @@
 """Dead Letter Queue: schema, batch publish, idempotent flush behavior."""
+
 from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime, timezone
 
 import pytest
 
@@ -16,10 +16,16 @@ def test_dlq_schema_constants_match_user_spec():
 
     fields = {f.name: str(f.dataType) for f in DLQ_SCHEMA.fields}
     expected_cols = {
-        "original_topic", "original_partition", "original_offset",
-        "original_key", "original_value",
-        "error_type", "error_message", "stack_trace",
-        "failed_at", "retry_count",
+        "original_topic",
+        "original_partition",
+        "original_offset",
+        "original_key",
+        "original_value",
+        "error_type",
+        "error_message",
+        "stack_trace",
+        "failed_at",
+        "retry_count",
     }
     assert set(fields) == expected_cols
 
@@ -40,21 +46,30 @@ def test_publish_dataframe_writes_envelope_columns(spark, tmp_lakehouse):
     from streaming.dlq import DLQHandler
 
     src = spark.createDataFrame(
-        [("vitals", 0, 100, "deviceA", "raw-bytes-1"),
-         ("vitals", 1, 101, "deviceB", "raw-bytes-2")],
+        [
+            ("vitals", 0, 100, "deviceA", "raw-bytes-1"),
+            ("vitals", 1, 101, "deviceB", "raw-bytes-2"),
+        ],
         ["topic", "partition", "offset", "key", "value"],
     )
     h = DLQHandler(spark)
-    n = h.publish_dataframe(src, error_type="avro_parse",
-                             error_message="bad payload")
+    n = h.publish_dataframe(src, error_type="avro_parse", error_message="bad payload")
     assert n == 2
 
     out = spark.read.format("delta").load(str(tmp_lakehouse / "dlq"))
     assert out.count() == 2
     cols = set(out.columns)
-    assert {"original_topic", "original_partition", "original_offset",
-            "original_key", "original_value", "error_type",
-            "error_message", "failed_at", "retry_count"} <= cols
+    assert {
+        "original_topic",
+        "original_partition",
+        "original_offset",
+        "original_key",
+        "original_value",
+        "error_type",
+        "error_message",
+        "failed_at",
+        "retry_count",
+    } <= cols
     rows = out.collect()
     assert all(r["error_type"] == "avro_parse" for r in rows)
 
@@ -69,8 +84,7 @@ def test_publish_dataframe_handles_missing_envelope_cols(spark, tmp_lakehouse):
         ["payload"],
     )
     h = DLQHandler(spark)
-    n = h.publish_dataframe(src, error_type="schema_drift",
-                             error_message="missing fields")
+    n = h.publish_dataframe(src, error_type="schema_drift", error_message="missing fields")
     assert n == 2
     out = spark.read.format("delta").load(str(tmp_lakehouse / "dlq"))
     assert out.count() == 2
@@ -81,6 +95,7 @@ def test_publish_dataframe_handles_missing_envelope_cols(spark, tmp_lakehouse):
 
 def test_publish_dataframe_no_spark_raises():
     from streaming.dlq import DLQHandler
+
     h = DLQHandler(spark=None)
     with pytest.raises(RuntimeError):
         h.publish_dataframe(None, "x", "y")

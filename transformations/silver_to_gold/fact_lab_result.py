@@ -5,14 +5,15 @@ Grain: 1 patient × 1 lab test × 1 test date
 Source: Silver ehr_lab_results (Observation entries from FHIR batches)
 
 patient_key lookup:
-  patient_id (hospital MRN) → identity bridge (hospital_mrn → patient_key sha256) → numeric surrogate.
-  Fallback: abs(hash(patient_id)) when bridge is absent.
+  patient_id (hospital MRN) → identity bridge (hospital_mrn → patient_key sha256)
+  → numeric surrogate. Fallback: abs(hash(patient_id)) when bridge is absent.
 
 condition_key:
   Inferred from a clinical mapping of lab test codes to ICD-10 conditions.
   HbA1c → E11.9 (Diabetes), LDL → E78.5 (Hyperlipidemia), BP_systolic → I10 (Hypertension).
   Tests without a mapping get condition_key = NULL.
 """
+
 import os
 import sys
 
@@ -28,7 +29,7 @@ from pyspark.sql.types import (
     StructType,
 )
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import settings  # noqa: E402
 from logger import get_logger  # noqa: E402
 from streaming.spark_config import get_spark_session  # noqa: E402
@@ -37,22 +38,24 @@ log = get_logger(__name__)
 
 # Clinical linkage: lab test code → ICD-10 condition code
 LAB_TO_CONDITION = [
-    ("HbA1c",       "E11.9"),  # Glycated haemoglobin → Type 2 diabetes
-    ("LDL",         "E78.5"),  # LDL cholesterol       → Hyperlipidemia
-    ("BP_systolic", "I10"),    # Systolic blood pressure→ Essential hypertension
+    ("HbA1c", "E11.9"),  # Glycated haemoglobin → Type 2 diabetes
+    ("LDL", "E78.5"),  # LDL cholesterol       → Hyperlipidemia
+    ("BP_systolic", "I10"),  # Systolic blood pressure→ Essential hypertension
 ]
 
-_EMPTY_SCHEMA = StructType([
-    StructField("patient_key",          LongType()),
-    StructField("date_key",             IntegerType()),
-    StructField("lab_test_name",        StringType()),
-    StructField("result_value",         DoubleType()),
-    StructField("result_unit",          StringType()),
-    StructField("reference_range_low",  DoubleType()),
-    StructField("reference_range_high", DoubleType()),
-    StructField("is_abnormal",          BooleanType()),
-    StructField("condition_key",        LongType()),
-])
+_EMPTY_SCHEMA = StructType(
+    [
+        StructField("patient_key", LongType()),
+        StructField("date_key", IntegerType()),
+        StructField("lab_test_name", StringType()),
+        StructField("result_value", DoubleType()),
+        StructField("result_unit", StringType()),
+        StructField("reference_range_low", DoubleType()),
+        StructField("reference_range_high", DoubleType()),
+        StructField("is_abnormal", BooleanType()),
+        StructField("condition_key", LongType()),
+    ]
+)
 
 
 def main():
@@ -68,19 +71,15 @@ def main():
         )
         return
 
-    labs          = spark.read.format("delta").load(settings.silver_ehr_lab_results)
+    labs = spark.read.format("delta").load(settings.silver_ehr_lab_results)
     dim_condition = spark.read.format("delta").load(settings.gold_dim_condition)
 
     # ── Patient key via identity bridge ────────────────────────────────
     if DeltaTable.isDeltaTable(spark, settings.silver_identity_bridge):
         bridge = spark.read.format("delta").load(settings.silver_identity_bridge)
-        mrn_to_patient = (
-            bridge
-            .filter(F.col("identifier_type") == "hospital_mrn")
-            .select(
-                F.col("identifier_value").alias("patient_id"),
-                F.abs(F.hash(F.col("patient_key"))).cast("long").alias("patient_key"),
-            )
+        mrn_to_patient = bridge.filter(F.col("identifier_type") == "hospital_mrn").select(
+            F.col("identifier_value").alias("patient_id"),
+            F.abs(F.hash(F.col("patient_key"))).cast("long").alias("patient_key"),
         )
         labs = labs.join(mrn_to_patient, on="patient_id", how="left")
         # Fallback for any MRNs not yet in bridge
@@ -89,7 +88,7 @@ def main():
             F.coalesce(
                 F.col("patient_key"),
                 F.abs(F.hash(F.col("patient_id"))).cast("long"),
-            )
+            ),
         )
     else:
         labs = labs.withColumn(
@@ -100,9 +99,9 @@ def main():
     # ── Date key ───────────────────────────────────────────────────────
     labs = labs.withColumn(
         "date_key",
-        (F.year("test_date") * 10000
-         + F.month("test_date") * 100
-         + F.dayofmonth("test_date")).cast("int")
+        (F.year("test_date") * 10000 + F.month("test_date") * 100 + F.dayofmonth("test_date")).cast(
+            "int"
+        ),
     )
 
     # ── Condition key via clinical lab-to-condition mapping ─────────────
@@ -112,38 +111,34 @@ def main():
         F.col("condition_key"),
         F.col("condition_code"),
     )
-    lab_cond_lookup = (
-        lab_cond_df
-        .join(cond_keys, on="condition_code", how="left")
-        .select("test_code", "condition_key")
+    lab_cond_lookup = lab_cond_df.join(cond_keys, on="condition_code", how="left").select(
+        "test_code", "condition_key"
     )
 
     labs = labs.join(lab_cond_lookup, on="test_code", how="left")
 
     # ── Final select + dedup on natural grain ───────────────────────────
-    df = (
-        labs
-        .select(
-            F.col("patient_key"),
-            F.col("date_key"),
-            F.col("test_code").alias("lab_test_name"),
-            F.col("value").alias("result_value"),
-            F.col("unit").alias("result_unit"),
-            F.col("reference_low").alias("reference_range_low"),
-            F.col("reference_high").alias("reference_range_high"),
-            F.col("is_abnormal"),
-            F.col("condition_key"),
-        )
-        .dropDuplicates(["patient_key", "date_key", "lab_test_name"])
-    )
+    df = labs.select(
+        F.col("patient_key"),
+        F.col("date_key"),
+        F.col("test_code").alias("lab_test_name"),
+        F.col("value").alias("result_value"),
+        F.col("unit").alias("result_unit"),
+        F.col("reference_low").alias("reference_range_low"),
+        F.col("reference_high").alias("reference_range_high"),
+        F.col("is_abnormal"),
+        F.col("condition_key"),
+    ).dropDuplicates(["patient_key", "date_key", "lab_test_name"])
 
     df.write.format("delta").mode("overwrite").save(settings.gold_fact_lab_result)
     log.info(
         "fact_lab_result written",
-        extra={"extra_data": {
-            "row_count": df.count(),
-            "path": settings.gold_fact_lab_result,
-        }},
+        extra={
+            "extra_data": {
+                "row_count": df.count(),
+                "path": settings.gold_fact_lab_result,
+            }
+        },
     )
 
 

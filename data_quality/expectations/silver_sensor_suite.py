@@ -9,6 +9,7 @@ Per-metric physiological range checks are encoded in Silver's ``is_valid``
 flag already; the gate verifies that every row passing into Gold has
 ``is_valid = True`` (i.e. quarantine has already siphoned off the rest).
 """
+
 from __future__ import annotations
 
 import os
@@ -20,15 +21,22 @@ import great_expectations.expectations as gxe
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from data_quality.gx_config import register_suite  # noqa: E402
 
 SUITE_NAME = "silver_sensor"
 
 KNOWN_METRICS = [
-    "heart_rate_bpm", "spo2_pct", "steps_since_last", "skin_temp_celsius",
-    "hrv_ms", "respiration_rate", "sleep_stage", "blood_glucose_mgdl",
-    "bp_systolic_mmhg", "bp_diastolic_mmhg",
+    "heart_rate_bpm",
+    "spo2_pct",
+    "steps_since_last",
+    "skin_temp_celsius",
+    "hrv_ms",
+    "respiration_rate",
+    "sleep_stage",
+    "blood_glucose_mgdl",
+    "bp_systolic_mmhg",
+    "bp_diastolic_mmhg",
 ]
 
 
@@ -49,25 +57,33 @@ def build():
 
     # is_valid: not null, must be true for rows propagating to Gold
     suite.add_expectation(gxe.ExpectColumnValuesToNotBeNull(column="is_valid"))
-    suite.add_expectation(gxe.ExpectColumnValuesToBeInSet(
-        column="is_valid", value_set=[True],
-    ))
+    suite.add_expectation(
+        gxe.ExpectColumnValuesToBeInSet(
+            column="is_valid",
+            value_set=[True],
+        )
+    )
 
     # device_account_id — required for downstream patient resolution
     suite.add_expectation(gxe.ExpectColumnValuesToNotBeNull(column="device_account_id"))
 
     # metric_name — closed enum (anything else is a data plumbing bug)
-    suite.add_expectation(gxe.ExpectColumnValuesToBeInSet(
-        column="metric_name", value_set=KNOWN_METRICS,
-    ))
+    suite.add_expectation(
+        gxe.ExpectColumnValuesToBeInSet(
+            column="metric_name",
+            value_set=KNOWN_METRICS,
+        )
+    )
 
     # event_timestamp inside watermark window (we use a generous 7d to leave
     # room for backfills and late-sync wearables)
     now = datetime.utcnow()
-    suite.add_expectation(gxe.ExpectColumnValuesToBeBetween(
-        column="event_timestamp",
-        min_value=now - timedelta(days=7),
-        max_value=now,
-    ))
+    suite.add_expectation(
+        gxe.ExpectColumnValuesToBeBetween(
+            column="event_timestamp",
+            min_value=now - timedelta(days=7),
+            max_value=now,
+        )
+    )
 
     return suite

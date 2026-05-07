@@ -1,4 +1,5 @@
 """fact_vital_daily_summary: aggregation math (avg/min/max/count, normal-range %)."""
+
 from __future__ import annotations
 
 import os
@@ -19,10 +20,23 @@ def test_aggregate_basic_stats(spark, tmp_lakehouse):
             ("acct_1", "smartwatch", "heart_rate_bpm", 70.0, True, datetime(2026, 5, 3, 8)),
             ("acct_1", "smartwatch", "heart_rate_bpm", 80.0, True, datetime(2026, 5, 3, 12)),
             ("acct_1", "smartwatch", "heart_rate_bpm", 90.0, True, datetime(2026, 5, 3, 16)),
-            ("acct_1", "smartwatch", "heart_rate_bpm", 200.0, False, datetime(2026, 5, 3, 17)),  # invalid
+            (
+                "acct_1",
+                "smartwatch",
+                "heart_rate_bpm",
+                200.0,
+                False,
+                datetime(2026, 5, 3, 17),
+            ),  # invalid
         ],
-        ["device_account_id", "device_type", "metric_name", "metric_value",
-         "is_valid", "event_timestamp"],
+        [
+            "device_account_id",
+            "device_type",
+            "metric_name",
+            "metric_value",
+            "is_valid",
+            "event_timestamp",
+        ],
     )
 
     dim_metric = spark.createDataFrame(
@@ -52,8 +66,14 @@ def test_aggregate_excludes_sleep_stage(spark, tmp_lakehouse):
             ("acct_1", "sleep_ring", "sleep_stage", 2.0, True, datetime(2026, 5, 3, 3)),
             ("acct_1", "sleep_ring", "heart_rate_bpm", 60.0, True, datetime(2026, 5, 3, 3)),
         ],
-        ["device_account_id", "device_type", "metric_name", "metric_value",
-         "is_valid", "event_timestamp"],
+        [
+            "device_account_id",
+            "device_type",
+            "metric_name",
+            "metric_value",
+            "is_valid",
+            "event_timestamp",
+        ],
     )
     dim_metric = spark.createDataFrame(
         [

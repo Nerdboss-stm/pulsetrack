@@ -5,6 +5,7 @@ All paths, endpoints, and tunables live here. Override any field by setting
 PT_<FIELD>=value as an environment variable, or by creating a .env file.
 Source modules import `settings` and reference attributes — no hardcoded paths.
 """
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 

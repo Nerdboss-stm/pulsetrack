@@ -17,6 +17,7 @@ A separate DLQ reprocessor job can read the DLQ table,
 attempt to fix records (e.g., apply schema migration),
 and re-publish to the original topic.
 """
+
 from __future__ import annotations
 
 import json
@@ -38,7 +39,7 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import settings  # noqa: E402
 from logger import get_logger  # noqa: E402
 from metrics import records_failed  # noqa: E402
@@ -48,23 +49,26 @@ log = get_logger(__name__)
 
 
 # ── Delta schema for the DLQ table ─────────────────────────────────────────────
-DLQ_SCHEMA = StructType([
-    StructField("original_topic",     StringType(),    True),
-    StructField("original_partition", IntegerType(),   True),
-    StructField("original_offset",    LongType(),      True),
-    StructField("original_key",       StringType(),    True),
-    StructField("original_value",     StringType(),    True),
-    StructField("error_type",         StringType(),    True),
-    StructField("error_message",      StringType(),    True),
-    StructField("stack_trace",        StringType(),    True),
-    StructField("failed_at",          TimestampType(), True),
-    StructField("retry_count",        IntegerType(),   True),
-])
+DLQ_SCHEMA = StructType(
+    [
+        StructField("original_topic", StringType(), True),
+        StructField("original_partition", IntegerType(), True),
+        StructField("original_offset", LongType(), True),
+        StructField("original_key", StringType(), True),
+        StructField("original_value", StringType(), True),
+        StructField("error_type", StringType(), True),
+        StructField("error_message", StringType(), True),
+        StructField("stack_trace", StringType(), True),
+        StructField("failed_at", TimestampType(), True),
+        StructField("retry_count", IntegerType(), True),
+    ]
+)
 
 
 @dataclass
 class DLQRecord:
     """A single failed record bound for the DLQ."""
+
     error_type: str
     error_message: str
     original_topic: Optional[str] = None
@@ -92,13 +96,15 @@ class DLQHandler:
     @property
     def producer(self) -> Producer:
         if self._producer is None:
-            self._producer = Producer({
-                "bootstrap.servers": settings.kafka_bootstrap,
-                "acks": "all",
-                "enable.idempotence": True,
-                "compression.type": "lz4",
-                "linger.ms": 50,
-            })
+            self._producer = Producer(
+                {
+                    "bootstrap.servers": settings.kafka_bootstrap,
+                    "acks": "all",
+                    "enable.idempotence": True,
+                    "compression.type": "lz4",
+                    "linger.ms": 50,
+                }
+            )
         return self._producer
 
     # ── Single-record publish (Delta + Kafka) ──────────────────────────────
@@ -114,12 +120,14 @@ class DLQHandler:
         ).inc()
         log.warning(
             "Record sent to DLQ",
-            extra={"extra_data": {
-                "error_type": record.error_type,
-                "error_message": record.error_message,
-                "topic": record.original_topic,
-                "offset": record.original_offset,
-            }},
+            extra={
+                "extra_data": {
+                    "error_type": record.error_type,
+                    "error_message": record.error_message,
+                    "topic": record.original_topic,
+                    "offset": record.original_offset,
+                }
+            },
         )
 
     @retry(max_retries=3, backoff_factor=2.0)
@@ -155,15 +163,16 @@ class DLQHandler:
             raise RuntimeError("publish_dataframe requires a SparkSession")
 
         cols = set(df.columns)
+
         def _col_or_null(name: str, dtype):
             return F.col(name).cast(dtype) if name in cols else F.lit(None).cast(dtype)
 
         enriched = df.select(
-            _col_or_null("topic",     StringType()).alias("original_topic"),
+            _col_or_null("topic", StringType()).alias("original_topic"),
             _col_or_null("partition", IntegerType()).alias("original_partition"),
-            _col_or_null("offset",    LongType()).alias("original_offset"),
-            _col_or_null("key",       StringType()).alias("original_key"),
-            _col_or_null("value",     StringType()).alias("original_value"),
+            _col_or_null("offset", LongType()).alias("original_offset"),
+            _col_or_null("key", StringType()).alias("original_key"),
+            _col_or_null("value", StringType()).alias("original_value"),
             F.lit(error_type).alias("error_type"),
             F.lit(error_message).alias("error_message"),
             F.lit(None).cast(StringType()).alias("stack_trace"),
