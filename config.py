@@ -6,16 +6,35 @@ PT_<FIELD>=value as an environment variable, or by creating a .env file.
 Source modules import `settings` and reference attributes — no hardcoded paths.
 """
 
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    # ── Environment ─────────────────────────────────────────────────────
+    environment: Literal["local", "cloud"] = "local"
+
+    # ── Spark ───────────────────────────────────────────────────────────
+    spark_master: str = "local[*]"
+    shuffle_partitions: int = 4
+
     # ── Kafka ───────────────────────────────────────────────────────────
     kafka_bootstrap: str = "localhost:9093"
-    schema_registry_url: str = "http://localhost:8081"
+    kafka_security_protocol: str = "PLAINTEXT"
+    kafka_sasl_mechanism: str = ""
     kafka_topic_sensor: str = "sensor_readings"
     kafka_topic_pharmacy: str = "pharmacy_events"
     kafka_topic_dlq: str = "pulsetrack_dlq"
+
+    # ── Schema Registry ─────────────────────────────────────────────────
+    schema_registry_url: str = "http://localhost:8081"
+    schema_registry_api_key: str = ""
+    schema_registry_api_secret: str = ""
+
+    # ── Iceberg catalog ─────────────────────────────────────────────────
+    iceberg_catalog_type: str = "hadoop"
+    glue_iceberg_warehouse: str = ""
 
     # ── Lakehouse base paths ────────────────────────────────────────────
     lakehouse_base: str = (
@@ -38,6 +57,7 @@ class Settings(BaseSettings):
     # ── Generator tunables ──────────────────────────────────────────────
     wearable_events_per_second: int = 10
     pharmacy_changes_per_minute: int = 5
+    user_count: int = 100
 
     # ── Bronze paths ────────────────────────────────────────────────────
     @property

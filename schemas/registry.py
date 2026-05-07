@@ -35,7 +35,12 @@ SCHEMA_FILES: dict[str, str] = {
 
 
 def get_schema_registry_client() -> SchemaRegistryClient:
-    return SchemaRegistryClient({"url": settings.schema_registry_url})
+    config: dict[str, str] = {"url": settings.schema_registry_url}
+    if settings.schema_registry_api_key:
+        config["basic.auth.user.info"] = (
+            f"{settings.schema_registry_api_key}:{settings.schema_registry_api_secret}"
+        )
+    return SchemaRegistryClient(config)
 
 
 def load_schema_str(filename: str) -> str:

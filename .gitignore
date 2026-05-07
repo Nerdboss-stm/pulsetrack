@@ -36,3 +36,9 @@ infrastructure/terraform.tfstate.backup
 infrastructure/terraform.tfvars
 infrastructure/*.tfplan
 .env.cloud
+
+# pytest-cov
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml

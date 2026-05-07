@@ -47,6 +47,7 @@ from schemas.registry import (  # noqa: E402
     get_avro_serializer,
     register_all_schemas,
 )
+from streaming.kafka_helpers import apply_msk_auth  # noqa: E402
 from utils.retry import retry  # noqa: E402
 
 log = get_logger(__name__)
@@ -71,15 +72,15 @@ class OpenFDAProducer:
         subject = f"{settings.kafka_topic_pharmacy}-value"
         self.serializer = get_avro_serializer(subject)
         self.key_serializer = StringSerializer()
-        self.producer = Producer(
-            {
-                "bootstrap.servers": settings.kafka_bootstrap,
-                "acks": "all",
-                "enable.idempotence": True,
-                "compression.type": "lz4",
-                "linger.ms": 100,
-            }
-        )
+        producer_config = {
+            "bootstrap.servers": settings.kafka_bootstrap,
+            "acks": "all",
+            "enable.idempotence": True,
+            "compression.type": "lz4",
+            "linger.ms": 100,
+        }
+        apply_msk_auth(producer_config)
+        self.producer = Producer(producer_config)
 
     # ── Offset management ──────────────────────────────────────────────────
     def load_offset(self) -> Optional[str]:

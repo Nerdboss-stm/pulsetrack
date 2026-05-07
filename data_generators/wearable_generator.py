@@ -49,6 +49,7 @@ from schemas.registry import (  # noqa: E402
     get_avro_serializer,
     register_all_schemas,
 )
+from streaming.kafka_helpers import apply_msk_auth  # noqa: E402
 
 log = get_logger(__name__)
 fake = Faker()
@@ -160,15 +161,15 @@ def main(num_users: int = 100, metrics_port: int = 8000):
     serializer = get_avro_serializer(subject)
     key_serializer = StringSerializer()
 
-    producer = Producer(
-        {
-            "bootstrap.servers": settings.kafka_bootstrap,
-            "acks": "all",
-            "enable.idempotence": True,
-            "compression.type": "lz4",
-            "linger.ms": 50,
-        }
-    )
+    producer_config = {
+        "bootstrap.servers": settings.kafka_bootstrap,
+        "acks": "all",
+        "enable.idempotence": True,
+        "compression.type": "lz4",
+        "linger.ms": 50,
+    }
+    apply_msk_auth(producer_config)
+    producer = Producer(producer_config)
 
     users = [make_user(f"acct_{i:05d}") for i in range(num_users)]
     total_devices = sum(len(u["devices"]) for u in users)

@@ -2,7 +2,8 @@
         generate-ehr generate-fda generate-vitals \
         stream-bronze stream-silver stream-gold \
         batch-silver identity batch-gold \
-        compact quality all clean
+        compact quality all clean \
+        cloud-upload cloud-bronze cloud-silver cloud-identity cloud-gold cloud-all
 
 # ── Setup & quality ─────────────────────────────────────────────────────────
 setup:
@@ -69,3 +70,37 @@ all: batch-silver identity batch-gold quality
 
 clean:
 	rm -rf /tmp/pulsetrack-lakehouse/*
+
+# ── Cloud targets (run on EMR; require infrastructure/terraform.tfstate) ───
+CLOUD_BUCKET = $(shell cd infrastructure && terraform output -raw lakehouse_bucket_name)
+
+cloud-upload:
+	tar czf /tmp/pulsetrack.tar.gz \
+	    --exclude='.git' --exclude='venv' --exclude='.venv' \
+	    --exclude='__pycache__' --exclude='*.pyc' \
+	    --exclude='infrastructure/.terraform' --exclude='spark-warehouse' .
+	aws s3 cp /tmp/pulsetrack.tar.gz s3://$(CLOUD_BUCKET)/code/
+
+cloud-bronze:
+	bash scripts/submit_emr_step.sh streaming/bronze_ingestion.py
+
+cloud-silver:
+	bash scripts/submit_emr_step.sh transformations/bronze_to_silver/sensor_silver.py
+	bash scripts/submit_emr_step.sh transformations/bronze_to_silver/ehr_silver.py
+
+cloud-identity:
+	bash scripts/submit_emr_step.sh transformations/identity_resolution/patient_identity_bridge.py
+
+cloud-gold:
+	bash scripts/submit_emr_step.sh transformations/silver_to_gold/dim_condition_category.py
+	bash scripts/submit_emr_step.sh transformations/silver_to_gold/dim_condition.py
+	bash scripts/submit_emr_step.sh transformations/silver_to_gold/dim_drug_class.py
+	bash scripts/submit_emr_step.sh transformations/silver_to_gold/dim_medication.py
+	bash scripts/submit_emr_step.sh transformations/silver_to_gold/dim_metric.py
+	bash scripts/submit_emr_step.sh transformations/silver_to_gold/dim_date.py
+	bash scripts/submit_emr_step.sh transformations/silver_to_gold/dim_time.py
+	bash scripts/submit_emr_step.sh transformations/silver_to_gold/dim_device.py
+	bash scripts/submit_emr_step.sh transformations/silver_to_gold/dim_patient.py
+	bash scripts/submit_emr_step.sh transformations/silver_to_gold/fact_lab_result.py
+
+cloud-all: cloud-upload cloud-silver cloud-identity cloud-gold
