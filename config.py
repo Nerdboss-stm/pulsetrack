@@ -18,7 +18,9 @@ class Settings(BaseSettings):
     kafka_topic_dlq: str = "pulsetrack_dlq"
 
     # ── Lakehouse base paths ────────────────────────────────────────────
-    lakehouse_base: str = "/tmp/pulsetrack-lakehouse"
+    lakehouse_base: str = (
+        "/tmp/pulsetrack-lakehouse"  # nosec B108 - dev default, prod sets PT_LAKEHOUSE_BASE to s3://...
+    )
     ehr_batch_dir: str = "data/ehr_batches"
 
     # ── API endpoints ───────────────────────────────────────────────────
