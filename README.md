@@ -198,13 +198,23 @@ Current results: **82 passed / 0 failed / 37 skipped, 77% line coverage**
 
 ---
 
-## What's planned
+## Active Development — Cloud + WHOOP Stack Migration
 
-- Bronze pharmacy consumer (Kafka `pharmacy_events` → Delta).
-- Silver pharmacy transform (drug enrichment, NDC linking).
-- ML features: anomaly classifier on `fact_vital_reading`.
-- Cross-source clinical correlation queries.
-- Apache Airflow DAGs for batch orchestration.
+> **This project is under active development.** The core streaming pipeline (Bronze → Silver → Gold on Delta Lake) is production-grade with 82 tests at 77% coverage. The following additions are being built on the `cloud-migration` branch and merging to main as each completes:
+
+| Feature | Status | Description |
+|---|---|---|
+| **AWS Infrastructure (Terraform)** | 🔄 In progress | EMR Spark cluster, MSK Kafka, S3 lakehouse, Glue Catalog, budget alerts |
+| **Cloud pipeline adaptation** | 🔄 In progress | Same code runs locally (Docker) or on AWS (EMR + MSK + S3) via env config |
+| **WHOOP API connector** | 📋 Next | OAuth 2.0 + polling of real WHOOP device data into Kafka pipeline |
+| **Apache Iceberg** | 📋 Next | Dual-write Delta + Iceberg, Glue Catalog, hidden partitioning |
+| **Glacierbase-style migrations** | 📋 Next | Versioned SQL migrations with SHA-256 immutability + CI/CD |
+| **Reversed-ID S3 partitioning** | 📋 Next | Eliminate date-prefix throttling, benchmarked on real S3 |
+| **dbt project on Snowflake** | 📋 Next | Staging → intermediate → marts, Commons macros, snapshot SCD2 |
+| **Prefect Cloud orchestration** | 📋 Next | Flows + deployments replacing Makefile |
+| **Snowflake integration** | 📋 Next | External + Iceberg tables, analytical views |
+| **Data observability monitors** | 📋 Next | Freshness, volume, schema, distribution (Monte Carlo pattern) |
+| **Scale test (50K users)** | 📋 Next | End-to-end on EMR with throughput + cost benchmarks |
 
 ---
 
