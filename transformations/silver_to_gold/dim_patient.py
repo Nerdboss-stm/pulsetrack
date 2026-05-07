@@ -13,6 +13,7 @@ PII masking: patient_id (MRN) is sha256-hashed. Email is dropped entirely.
 Fallback: if Silver identity bridge does not exist yet, dim_patient is built
 directly from the raw EHR batch files so the table is always populated.
 """
+
 import glob
 import json
 import os
@@ -30,7 +31,7 @@ from pyspark.sql.types import (
     StructType,
 )
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import settings  # noqa: E402
 from logger import get_logger  # noqa: E402
 from streaming.spark_config import get_spark_session  # noqa: E402
@@ -49,30 +50,38 @@ def load_ehr_demographics(spark):
         with open(batch_file) as f:
             data = json.load(f)
         for p in data["patients"]:
-            rows.append((
-                p["patient_id"],
-                p.get("patient_email", ""),
-                int(p.get("patient_birth_year", 0)),
-            ))
+            rows.append(
+                (
+                    p["patient_id"],
+                    p.get("patient_email", ""),
+                    int(p.get("patient_birth_year", 0)),
+                )
+            )
 
     if not rows:
-        return spark.createDataFrame([], StructType([
-            StructField("patient_id",         StringType()),
-            StructField("patient_email",       StringType()),
-            StructField("patient_birth_year",  IntegerType()),
-        ]))
+        return spark.createDataFrame(
+            [],
+            StructType(
+                [
+                    StructField("patient_id", StringType()),
+                    StructField("patient_email", StringType()),
+                    StructField("patient_birth_year", IntegerType()),
+                ]
+            ),
+        )
 
     current_year = datetime.utcnow().year
     return (
         spark.createDataFrame(rows, ["patient_id", "patient_email", "patient_birth_year"])
         .dropDuplicates(["patient_id"])
         .withColumn("age", F.lit(current_year) - F.col("patient_birth_year"))
-        .withColumn("age_group",
-            F.when(F.col("age") < 18,  "0-17")
-             .when(F.col("age") < 35,  "18-34")
-             .when(F.col("age") < 50,  "35-49")
-             .when(F.col("age") < 65,  "50-64")
-             .otherwise("65+")
+        .withColumn(
+            "age_group",
+            F.when(F.col("age") < 18, "0-17")
+            .when(F.col("age") < 35, "18-34")
+            .when(F.col("age") < 50, "35-49")
+            .when(F.col("age") < 65, "50-64")
+            .otherwise("65+"),
         )
     )
 
@@ -90,21 +99,29 @@ def main():
     if not DeltaTable.isDeltaTable(spark, settings.silver_identity_bridge):
         log.warning("Identity bridge not found — building from EHR batch files only")
         df = (
-            demo_df
-            .withColumn("patient_key",
-                F.abs(F.hash(F.sha2(F.lower(F.trim(F.col("patient_email"))), 256))).cast("long"))
-            .withColumn("patient_id_masked",
-                F.sha2(F.lower(F.trim(F.col("patient_id"))), 256))
-            .withColumn("gender",                F.lit("Unknown"))
+            demo_df.withColumn(
+                "patient_key",
+                F.abs(F.hash(F.sha2(F.lower(F.trim(F.col("patient_email"))), 256))).cast("long"),
+            )
+            .withColumn("patient_id_masked", F.sha2(F.lower(F.trim(F.col("patient_id"))), 256))
+            .withColumn("gender", F.lit("Unknown"))
             .withColumn("primary_condition_key", F.lit(None).cast(LongType()))
-            .withColumn("device_count",          F.lit(0).cast(LongType()))
-            .withColumn("first_reading_date",    F.lit(None).cast(DateType()))
-            .select("patient_key", "patient_id_masked", "age_group", "gender",
-                    "primary_condition_key", "device_count", "first_reading_date")
+            .withColumn("device_count", F.lit(0).cast(LongType()))
+            .withColumn("first_reading_date", F.lit(None).cast(DateType()))
+            .select(
+                "patient_key",
+                "patient_id_masked",
+                "age_group",
+                "gender",
+                "primary_condition_key",
+                "device_count",
+                "first_reading_date",
+            )
             .dropDuplicates(["patient_key"])
         )
-        df.write.format("delta").mode("overwrite") \
-          .option("overwriteSchema", "true").save(settings.gold_dim_patient)
+        df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(
+            settings.gold_dim_patient
+        )
         log.info(
             "dim_patient written (seeded from EHR batch files)",
             extra={"extra_data": {"row_count": df.count(), "path": settings.gold_dim_patient}},
@@ -114,37 +131,32 @@ def main():
     # ── Full build from Silver ──────────────────────────────────────────
     bridge = spark.read.format("delta").load(settings.silver_identity_bridge)
 
-    mrn_rows = (
-        bridge.filter(F.col("identifier_type") == "hospital_mrn")
-              .select(F.col("patient_key").alias("patient_key_sha256"),
-                      F.col("identifier_value").alias("patient_id"))
+    mrn_rows = bridge.filter(F.col("identifier_type") == "hospital_mrn").select(
+        F.col("patient_key").alias("patient_key_sha256"),
+        F.col("identifier_value").alias("patient_id"),
     )
-    email_rows = (
-        bridge.filter(F.col("identifier_type") == "email")
-              .select(F.col("patient_key").alias("patient_key_sha256"),
-                      F.col("identifier_value").alias("patient_email"))
+    email_rows = bridge.filter(F.col("identifier_type") == "email").select(
+        F.col("patient_key").alias("patient_key_sha256"),
+        F.col("identifier_value").alias("patient_email"),
     )
 
     linked = mrn_rows.join(email_rows, on="patient_key_sha256", how="inner")
 
-    patients = (
-        linked
-        .join(demo_df.select("patient_id", "age_group"), on="patient_id", how="left")
-        .withColumn("age_group", F.coalesce(F.col("age_group"), F.lit("Unknown")))
-    )
+    patients = linked.join(
+        demo_df.select("patient_id", "age_group"), on="patient_id", how="left"
+    ).withColumn("age_group", F.coalesce(F.col("age_group"), F.lit("Unknown")))
 
     # ── Primary condition (first active ICD-10 per patient) ─────────────
     if DeltaTable.isDeltaTable(spark, settings.silver_ehr_conditions):
         conds_silver = spark.read.format("delta").load(settings.silver_ehr_conditions)
-        dim_cond     = spark.read.format("delta").load(settings.gold_dim_condition)
+        dim_cond = spark.read.format("delta").load(settings.gold_dim_condition)
 
         cond_lookup = dim_cond.select(
             F.col("condition_key"),
             F.col("condition_code").alias("icd10_code"),
         )
         primary_cond = (
-            conds_silver
-            .filter(F.col("status") == "active")
+            conds_silver.filter(F.col("status") == "active")
             .join(cond_lookup, on="icd10_code", how="left")
             .groupBy("patient_id")
             .agg(F.first("condition_key", ignorenulls=True).alias("primary_condition_key"))
@@ -157,15 +169,12 @@ def main():
     if DeltaTable.isDeltaTable(spark, settings.silver_sensor):
         sensors = spark.read.format("delta").load(settings.silver_sensor)
 
-        device_bridge = (
-            bridge
-            .filter(F.col("identifier_type") == "device_account_id")
-            .select(F.col("identifier_value").alias("device_account_id"),
-                    F.col("patient_key").alias("patient_key_sha256"))
+        device_bridge = bridge.filter(F.col("identifier_type") == "device_account_id").select(
+            F.col("identifier_value").alias("device_account_id"),
+            F.col("patient_key").alias("patient_key_sha256"),
         )
         device_stats = (
-            sensors
-            .join(device_bridge, on="device_account_id", how="left")
+            sensors.join(device_bridge, on="device_account_id", how="left")
             .groupBy("patient_key_sha256")
             .agg(
                 F.countDistinct("device_id").alias("device_count"),
@@ -174,28 +183,31 @@ def main():
         )
         patients = patients.join(device_stats, on="patient_key_sha256", how="left")
     else:
-        patients = (
-            patients
-            .withColumn("device_count",       F.lit(0).cast(LongType()))
-            .withColumn("first_reading_date", F.lit(None).cast(DateType()))
+        patients = patients.withColumn("device_count", F.lit(0).cast(LongType())).withColumn(
+            "first_reading_date", F.lit(None).cast(DateType())
         )
 
     # ── Surrogate key + PII masking + final select ──────────────────────
     df = (
-        patients
-        .withColumn("patient_key",
-            F.abs(F.hash(F.col("patient_key_sha256"))).cast("long"))
-        .withColumn("patient_id_masked",
-            F.sha2(F.lower(F.trim(F.col("patient_id"))), 256))
+        patients.withColumn("patient_key", F.abs(F.hash(F.col("patient_key_sha256"))).cast("long"))
+        .withColumn("patient_id_masked", F.sha2(F.lower(F.trim(F.col("patient_id"))), 256))
         .withColumn("gender", F.lit("Unknown"))
         .fillna({"device_count": 0})
-        .select("patient_key", "patient_id_masked", "age_group", "gender",
-                "primary_condition_key", "device_count", "first_reading_date")
+        .select(
+            "patient_key",
+            "patient_id_masked",
+            "age_group",
+            "gender",
+            "primary_condition_key",
+            "device_count",
+            "first_reading_date",
+        )
         .dropDuplicates(["patient_key"])
     )
 
-    df.write.format("delta").mode("overwrite") \
-      .option("overwriteSchema", "true").save(settings.gold_dim_patient)
+    df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(
+        settings.gold_dim_patient
+    )
     log.info(
         "dim_patient written",
         extra={"extra_data": {"row_count": df.count(), "path": settings.gold_dim_patient}},

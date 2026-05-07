@@ -1,4 +1,5 @@
 """dim_patient: linked vs unlinked patients, PII masking, age groups."""
+
 from __future__ import annotations
 
 import json
@@ -31,15 +32,22 @@ def test_dim_patient_fallback_when_bridge_missing(spark, tmp_lakehouse, monkeypa
     monkeypatch.chdir(tmp_lakehouse)
     monkeypatch.setenv("PT_EHR_BATCH_DIR", "ehr_batches")
     import importlib
+
     import config
+
     importlib.reload(config)
 
-    _write_ehr_batch(tmp_lakehouse, "2026-05-03", [
-        {"patient_id": "MRN-1", "patient_email": "a@x.com", "patient_birth_year": 1990},
-        {"patient_id": "MRN-2", "patient_email": "b@x.com", "patient_birth_year": 1955},
-    ])
+    _write_ehr_batch(
+        tmp_lakehouse,
+        "2026-05-03",
+        [
+            {"patient_id": "MRN-1", "patient_email": "a@x.com", "patient_birth_year": 1990},
+            {"patient_id": "MRN-2", "patient_email": "b@x.com", "patient_birth_year": 1955},
+        ],
+    )
 
     from transformations.silver_to_gold.dim_patient import main as dim_patient_main
+
     dim_patient_main()
 
     dim = spark.read.format("delta").load(config.settings.gold_dim_patient)

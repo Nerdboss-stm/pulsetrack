@@ -15,10 +15,10 @@ Polling strategy:
 - Ongoing: poll every 5 minutes for new reports since last_received_date
 - Offset tracking: persist last_received_date to a local file
 """
+
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import sys
 import time
@@ -35,7 +35,7 @@ from confluent_kafka.serialization import (
     StringSerializer,
 )
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import settings  # noqa: E402
 from logger import get_logger  # noqa: E402
 from metrics import (  # noqa: E402
@@ -71,13 +71,15 @@ class OpenFDAProducer:
         subject = f"{settings.kafka_topic_pharmacy}-value"
         self.serializer = get_avro_serializer(subject)
         self.key_serializer = StringSerializer()
-        self.producer = Producer({
-            "bootstrap.servers": settings.kafka_bootstrap,
-            "acks": "all",
-            "enable.idempotence": True,
-            "compression.type": "lz4",
-            "linger.ms": 100,
-        })
+        self.producer = Producer(
+            {
+                "bootstrap.servers": settings.kafka_bootstrap,
+                "acks": "all",
+                "enable.idempotence": True,
+                "compression.type": "lz4",
+                "linger.ms": 100,
+            }
+        )
 
     # ── Offset management ──────────────────────────────────────────────────
     def load_offset(self) -> Optional[str]:
@@ -109,8 +111,7 @@ class OpenFDAProducer:
             # Open FDA returns 404 when zero results match
             return []
         if resp.status_code == 429:
-            log.warning("Open FDA rate-limited; backing off",
-                        extra={"extra_data": {"status": 429}})
+            log.warning("Open FDA rate-limited; backing off", extra={"extra_data": {"status": 429}})
             time.sleep(60)
             return []
         resp.raise_for_status()
@@ -177,8 +178,10 @@ class OpenFDAProducer:
     def _on_delivery(self, err, msg):
         if err is not None:
             records_failed.labels(layer="bronze", source="openfda", reason="delivery_error").inc()
-            log.error("Kafka delivery failed",
-                      extra={"extra_data": {"topic": msg.topic(), "error": str(err)}})
+            log.error(
+                "Kafka delivery failed",
+                extra={"extra_data": {"topic": msg.topic(), "error": str(err)}},
+            )
 
     def _publish(self, event: dict) -> None:
         value_bytes = self.serializer(
@@ -201,21 +204,26 @@ class OpenFDAProducer:
                 events = self.fetch_events(start, end, limit=100, skip=page * 100)
             except requests.RequestException as exc:
                 records_failed.labels(layer="bronze", source="openfda", reason="api_error").inc()
-                log.error("Open FDA fetch failed",
-                          extra={"extra_data": {"page": page, "error": str(exc)}})
+                log.error(
+                    "Open FDA fetch failed", extra={"extra_data": {"page": page, "error": str(exc)}}
+                )
                 break
             if not events:
                 break
             for ev in events:
                 mapped = self.transform_to_pharmacy_event(ev)
                 if not mapped:
-                    records_failed.labels(layer="bronze", source="openfda", reason="parse_error").inc()
+                    records_failed.labels(
+                        layer="bronze", source="openfda", reason="parse_error"
+                    ).inc()
                     continue
                 try:
                     self._publish(mapped)
                     published += 1
                 except Exception:
-                    records_failed.labels(layer="bronze", source="openfda", reason="serialize_error").inc()
+                    records_failed.labels(
+                        layer="bronze", source="openfda", reason="serialize_error"
+                    ).inc()
                     log.error("Serialize/produce failed", exc_info=True)
             self.producer.poll(0)
             # Throttle below the 240/min unauthenticated limit
@@ -228,12 +236,12 @@ class OpenFDAProducer:
         start_dt = end_dt - timedelta(days=days)
         start = start_dt.strftime("%Y%m%d")
         end = end_dt.strftime("%Y%m%d")
-        log.info("OpenFDA backfill starting",
-                 extra={"extra_data": {"start": start, "end": end}})
+        log.info("OpenFDA backfill starting", extra={"extra_data": {"start": start, "end": end}})
         n = self._process_window(start, end)
         self.save_offset(end)
-        log.info("OpenFDA backfill complete",
-                 extra={"extra_data": {"published": n, "checkpoint": end}})
+        log.info(
+            "OpenFDA backfill complete", extra={"extra_data": {"published": n, "checkpoint": end}}
+        )
         return n
 
     def run(self, poll_interval_seconds: Optional[int] = None) -> None:
@@ -242,18 +250,25 @@ class OpenFDAProducer:
         if self.load_offset() is None:
             self.backfill(days=30)
 
-        log.info("OpenFDA polling loop started",
-                 extra={"extra_data": {"poll_interval_seconds": poll}})
+        log.info(
+            "OpenFDA polling loop started", extra={"extra_data": {"poll_interval_seconds": poll}}
+        )
         try:
             while True:
                 start = self.load_offset() or datetime.utcnow().strftime("%Y%m%d")
                 end = datetime.utcnow().strftime("%Y%m%d")
                 n = self._process_window(start, end)
                 self.save_offset(end)
-                log.info("OpenFDA cycle complete",
-                         extra={"extra_data": {
-                             "start": start, "end": end, "published": n,
-                         }})
+                log.info(
+                    "OpenFDA cycle complete",
+                    extra={
+                        "extra_data": {
+                            "start": start,
+                            "end": end,
+                            "published": n,
+                        }
+                    },
+                )
                 time.sleep(poll)
         except KeyboardInterrupt:
             self._flush_producer(10)

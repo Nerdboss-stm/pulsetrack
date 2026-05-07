@@ -2,6 +2,7 @@
 PulseTrack Pharmacy CDC Generator
 ...
 """
+
 import copy
 import json
 import os
@@ -12,7 +13,7 @@ from datetime import datetime
 
 from kafka import KafkaProducer
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import settings  # noqa: E402
 from logger import get_logger  # noqa: E402
 
@@ -64,21 +65,24 @@ def generate_new_fill():
         "status": "filled",
     }
 
-    FILLS_DB[rx_id] = copy.deepcopy(fill)   # save to our fake DB
+    FILLS_DB[rx_id] = copy.deepcopy(fill)  # save to our fake DB
 
     return {
         "op": "c",
         "before": None,
         "after": copy.deepcopy(fill),
-        "source": {"table": "prescription_fills", "db": "pharmacy_ops",
-                   "ts_ms": int(datetime.utcnow().timestamp() * 1000)},
-        "ts_ms": int(datetime.utcnow().timestamp() * 1000)
+        "source": {
+            "table": "prescription_fills",
+            "db": "pharmacy_ops",
+            "ts_ms": int(datetime.utcnow().timestamp() * 1000),
+        },
+        "ts_ms": int(datetime.utcnow().timestamp() * 1000),
     }
 
 
 def generate_status_change():
     if not FILLS_DB:
-        return generate_new_fill()   # nothing to update yet, create instead
+        return generate_new_fill()  # nothing to update yet, create instead
 
     rx_id = random.choice(list(FILLS_DB.keys()))
     fill = FILLS_DB[rx_id]
@@ -90,30 +94,35 @@ def generate_status_change():
 
     after = copy.deepcopy(fill)
 
-    del FILLS_DB[rx_id]   # returned = done, remove from active fills
+    del FILLS_DB[rx_id]  # returned = done, remove from active fills
 
     return {
         "op": "u",
         "before": before,
         "after": after,
-        "source": {"table": "prescription_fills", "db": "pharmacy_ops",
-                   "ts_ms": int(datetime.utcnow().timestamp() * 1000)},
-        "ts_ms": int(datetime.utcnow().timestamp() * 1000)
+        "source": {
+            "table": "prescription_fills",
+            "db": "pharmacy_ops",
+            "ts_ms": int(datetime.utcnow().timestamp() * 1000),
+        },
+        "ts_ms": int(datetime.utcnow().timestamp() * 1000),
     }
 
 
 def main():
     log.info(
         "Pharmacy CDC generator starting",
-        extra={"extra_data": {
-            "topic": settings.kafka_topic_pharmacy,
-            "changes_per_minute": settings.pharmacy_changes_per_minute,
-        }},
+        extra={
+            "extra_data": {
+                "topic": settings.kafka_topic_pharmacy,
+                "changes_per_minute": settings.pharmacy_changes_per_minute,
+            }
+        },
     )
 
     producer = KafkaProducer(
         bootstrap_servers=settings.kafka_bootstrap,
-        value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+        value_serializer=lambda v: json.dumps(v).encode("utf-8"),
     )
 
     count = 0

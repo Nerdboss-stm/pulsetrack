@@ -1,11 +1,11 @@
 """sensor_silver: parse_and_explode, add_quality_flags, dedup, MERGE."""
+
 from __future__ import annotations
 
 import os
 import sys
 from datetime import datetime, timedelta
 
-import pytest
 from pyspark.sql.types import (
     BooleanType,
     DoubleType,
@@ -21,28 +21,37 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 # Explicit schema so the `metrics` field becomes a MapType, not a nested struct.
-_DECODED_SCHEMA = StructType([
-    StructField("reading_id",            StringType()),
-    StructField("device_id",             StringType()),
-    StructField("device_type",           StringType()),
-    StructField("user_device_account_id", StringType()),
-    StructField("patient_email",         StringType()),
-    StructField("firmware_version",      StringType()),
-    StructField("battery_pct",           IntegerType()),
-    StructField("metrics",               MapType(StringType(), DoubleType())),
-    StructField("event_timestamp",       TimestampType()),
-    StructField("sync_timestamp",        TimestampType()),
-])
-BRONZE_TEST_SCHEMA = StructType([
-    StructField("decoded",             _DECODED_SCHEMA),
-    StructField("ingestion_timestamp", TimestampType()),
-    StructField("is_parseable",        BooleanType()),
-])
+_DECODED_SCHEMA = StructType(
+    [
+        StructField("reading_id", StringType()),
+        StructField("device_id", StringType()),
+        StructField("device_type", StringType()),
+        StructField("user_device_account_id", StringType()),
+        StructField("patient_email", StringType()),
+        StructField("firmware_version", StringType()),
+        StructField("battery_pct", IntegerType()),
+        StructField("metrics", MapType(StringType(), DoubleType())),
+        StructField("event_timestamp", TimestampType()),
+        StructField("sync_timestamp", TimestampType()),
+    ]
+)
+BRONZE_TEST_SCHEMA = StructType(
+    [
+        StructField("decoded", _DECODED_SCHEMA),
+        StructField("ingestion_timestamp", TimestampType()),
+        StructField("is_parseable", BooleanType()),
+    ]
+)
 
 
-def _bronze_row(reading_id: str, device_type: str, metrics: dict,
-                event_ts: datetime, sync_ts: datetime | None = None,
-                is_parseable: bool = True) -> dict:
+def _bronze_row(
+    reading_id: str,
+    device_type: str,
+    metrics: dict,
+    event_ts: datetime,
+    sync_ts: datetime | None = None,
+    is_parseable: bool = True,
+) -> dict:
     sync_ts = sync_ts or event_ts
     return {
         "is_parseable": is_parseable,
@@ -68,8 +77,7 @@ def test_parse_and_explode_drops_unparseable_rows(spark):
     now = datetime(2026, 5, 3, 14, 0)
     rows = [
         _bronze_row("r1", "smartwatch", {"heart_rate_bpm": 72.0}, now),
-        _bronze_row("r2", "smartwatch", {"heart_rate_bpm": 80.0}, now,
-                    is_parseable=False),
+        _bronze_row("r2", "smartwatch", {"heart_rate_bpm": 80.0}, now, is_parseable=False),
     ]
     df = spark.createDataFrame(rows, schema=BRONZE_TEST_SCHEMA)
     out = parse_and_explode(df).collect()
@@ -83,11 +91,14 @@ def test_parse_and_explode_explodes_one_row_per_metric(spark):
     from transformations.bronze_to_silver.sensor_silver import parse_and_explode
 
     now = datetime(2026, 5, 3, 14, 0)
-    rows = [_bronze_row(
-        "r1", "smartwatch",
-        {"heart_rate_bpm": 72.0, "spo2_pct": 97.0, "hrv_ms": 45.0},
-        now,
-    )]
+    rows = [
+        _bronze_row(
+            "r1",
+            "smartwatch",
+            {"heart_rate_bpm": 72.0, "spo2_pct": 97.0, "hrv_ms": 45.0},
+            now,
+        )
+    ]
     df = spark.createDataFrame(rows, schema=BRONZE_TEST_SCHEMA)
     out = parse_and_explode(df).collect()
     metric_names = {r["metric_name"] for r in out}
@@ -95,16 +106,16 @@ def test_parse_and_explode_explodes_one_row_per_metric(spark):
 
 
 def test_quality_flags_marks_out_of_range_invalid(spark):
-    from pyspark.sql import functions as F
     from transformations.bronze_to_silver.sensor_silver import (
-        add_quality_flags, parse_and_explode,
+        add_quality_flags,
+        parse_and_explode,
     )
 
     now = datetime(2026, 5, 3, 14, 0)
     rows = [
-        _bronze_row("r1", "smartwatch", {"heart_rate_bpm": 70.0}, now),     # ok
-        _bronze_row("r2", "smartwatch", {"heart_rate_bpm": 999.0}, now),    # invalid
-        _bronze_row("r3", "smartwatch", {"heart_rate_bpm": None}, now),     # null → invalid
+        _bronze_row("r1", "smartwatch", {"heart_rate_bpm": 70.0}, now),  # ok
+        _bronze_row("r2", "smartwatch", {"heart_rate_bpm": 999.0}, now),  # invalid
+        _bronze_row("r3", "smartwatch", {"heart_rate_bpm": None}, now),  # null → invalid
     ]
     df = spark.createDataFrame(rows, schema=BRONZE_TEST_SCHEMA)
     out = add_quality_flags(parse_and_explode(df))
@@ -116,13 +127,13 @@ def test_quality_flags_marks_out_of_range_invalid(spark):
 
 def test_quality_flags_marks_late_arriving(spark):
     from transformations.bronze_to_silver.sensor_silver import (
-        add_quality_flags, parse_and_explode,
+        add_quality_flags,
+        parse_and_explode,
     )
 
     event_ts = datetime(2026, 5, 3, 10, 0)
     sync_ts = event_ts + timedelta(hours=3)  # > 2h late
-    rows = [_bronze_row("r1", "smartwatch", {"heart_rate_bpm": 70.0},
-                        event_ts, sync_ts)]
+    rows = [_bronze_row("r1", "smartwatch", {"heart_rate_bpm": 70.0}, event_ts, sync_ts)]
     df = spark.createDataFrame(rows, schema=BRONZE_TEST_SCHEMA)
     out = add_quality_flags(parse_and_explode(df)).collect()
     assert out[0]["is_late_arriving"] is True
@@ -130,9 +141,15 @@ def test_quality_flags_marks_late_arriving(spark):
 
 def test_quality_flags_metric_ranges_cover_all_known_metrics(spark):
     from transformations.bronze_to_silver.sensor_silver import METRIC_RANGES
+
     expected_metrics = {
-        "heart_rate_bpm", "spo2_pct", "hrv_ms", "skin_temp_celsius",
-        "respiration_rate", "blood_glucose_mgdl",
-        "bp_systolic_mmhg", "bp_diastolic_mmhg",
+        "heart_rate_bpm",
+        "spo2_pct",
+        "hrv_ms",
+        "skin_temp_celsius",
+        "respiration_rate",
+        "blood_glucose_mgdl",
+        "bp_systolic_mmhg",
+        "bp_diastolic_mmhg",
     }
     assert expected_metrics <= set(METRIC_RANGES.keys())

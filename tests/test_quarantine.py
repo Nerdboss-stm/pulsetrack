@@ -1,4 +1,5 @@
 """Quarantine sink filters bad rows, writes Delta, bumps the metric."""
+
 from __future__ import annotations
 
 import os
@@ -11,8 +12,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 @pytest.mark.usefixtures("tmp_lakehouse")
 def test_quarantine_writes_only_invalid_rows(spark, tmp_lakehouse):
-    from data_quality.quarantine import quarantine_records
     from pyspark.sql import functions as F
+
+    from data_quality.quarantine import quarantine_records
 
     df = spark.createDataFrame(
         [

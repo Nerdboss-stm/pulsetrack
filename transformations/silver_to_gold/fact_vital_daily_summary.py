@@ -21,6 +21,7 @@ patient_key lookup: device_account_id → identity bridge
 sleep_stage is excluded from the avg/min/max bucket because it is a
 categorical ordinal (0–3); it is still surfaced via fact_vital_reading.
 """
+
 from __future__ import annotations
 
 import os
@@ -37,10 +38,12 @@ from pyspark.sql.types import (
     StructType,
 )
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import settings  # noqa: E402
 from data_quality.expectations.gold_vitals_suite import (  # noqa: E402
     SUITE_NAME as GOLD_SUITE,
+)
+from data_quality.expectations.gold_vitals_suite import (
     prepare_for_validation as prepare_gold,
 )
 from data_quality.gx_config import validate as gx_validate  # noqa: E402
@@ -56,17 +59,19 @@ from utils.streaming import setup_graceful_shutdown  # noqa: E402
 log = get_logger(__name__)
 QUERY_NAME = "gold-fact-vital-daily-summary"
 
-_EMPTY_SCHEMA = StructType([
-    StructField("patient_key",         LongType()),
-    StructField("metric_key",          LongType()),
-    StructField("date_key",            IntegerType()),
-    StructField("avg_value",           DoubleType()),
-    StructField("min_value",           DoubleType()),
-    StructField("max_value",           DoubleType()),
-    StructField("reading_count",       LongType()),
-    StructField("anomaly_count",       LongType()),
-    StructField("pct_in_normal_range", DoubleType()),
-])
+_EMPTY_SCHEMA = StructType(
+    [
+        StructField("patient_key", LongType()),
+        StructField("metric_key", LongType()),
+        StructField("date_key", IntegerType()),
+        StructField("avg_value", DoubleType()),
+        StructField("min_value", DoubleType()),
+        StructField("max_value", DoubleType()),
+        StructField("reading_count", LongType()),
+        StructField("anomaly_count", LongType()),
+        StructField("pct_in_normal_range", DoubleType()),
+    ]
+)
 
 
 # ── Aggregation core ──────────────────────────────────────────────────────────
@@ -75,12 +80,11 @@ def _aggregate(silver_subset: DataFrame, dim_metric: DataFrame, bridge_df) -> Da
     sensors = silver_subset
 
     if bridge_df is not None:
-        device_to_patient = (
-            bridge_df.filter(F.col("identifier_type") == "device_account_id")
-            .select(
-                F.col("identifier_value").alias("device_account_id"),
-                F.abs(F.hash(F.col("patient_key"))).cast("long").alias("linked_patient_key"),
-            )
+        device_to_patient = bridge_df.filter(
+            F.col("identifier_type") == "device_account_id"
+        ).select(
+            F.col("identifier_value").alias("device_account_id"),
+            F.abs(F.hash(F.col("patient_key"))).cast("long").alias("linked_patient_key"),
         )
         sensors = sensors.join(device_to_patient, on="device_account_id", how="left")
     else:
@@ -128,7 +132,8 @@ def _aggregate(silver_subset: DataFrame, dim_metric: DataFrame, bridge_df) -> Da
             F.sum(F.when(~F.col("is_valid"), F.lit(1)).otherwise(F.lit(0))).alias("anomaly_count"),
             (
                 F.sum(F.when(F.col("in_normal_range"), F.lit(1)).otherwise(F.lit(0))).cast("double")
-                / F.count(F.lit(1)) * 100
+                / F.count(F.lit(1))
+                * 100
             ).alias("pct_in_normal_range"),
         )
     )
@@ -153,8 +158,9 @@ def _merge_or_seed(spark: SparkSession, aggregated: DataFrame) -> int:
         return 0
 
     if not DeltaTable.isDeltaTable(spark, settings.gold_fact_vital_daily):
-        aggregated.write.format("delta").mode("overwrite") \
-            .option("overwriteSchema", "true").save(settings.gold_fact_vital_daily)
+        aggregated.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(
+            settings.gold_fact_vital_daily
+        )
         return n
     DeltaTable.forPath(spark, settings.gold_fact_vital_daily).alias("t").merge(
         aggregated.alias("s"),
@@ -172,14 +178,12 @@ def _make_streaming_processor(spark: SparkSession):
             return
 
         cached = batch_df.cache()
-        keys = (
-            cached.select(
-                F.col("device_account_id"),
-                F.col("metric_name"),
-                F.col("device_type"),
-                F.to_date("event_timestamp").alias("event_date"),
-            ).distinct()
-        )
+        keys = cached.select(
+            F.col("device_account_id"),
+            F.col("metric_name"),
+            F.col("device_type"),
+            F.to_date("event_timestamp").alias("event_date"),
+        ).distinct()
         # Re-read affected Silver slices to recompute correctly across batches
         silver = spark.read.format("delta").load(settings.silver_sensor)
         affected = silver.join(
@@ -206,6 +210,7 @@ def _make_streaming_processor(spark: SparkSession):
             "Gold daily summary batch processed",
             extra={"extra_data": {"batch_id": batch_id, "merged_rows": n}},
         )
+
     return process
 
 
@@ -220,8 +225,7 @@ def run_streaming(metrics_port: int = 8004) -> None:
     )
 
     query = (
-        silver_stream.writeStream
-        .foreachBatch(_make_streaming_processor(spark))
+        silver_stream.writeStream.foreachBatch(_make_streaming_processor(spark))
         .option("checkpointLocation", f"{settings.checkpoint_base}/gold_vital_daily")
         .trigger(processingTime=settings.trigger_interval)
         .queryName(QUERY_NAME)
@@ -229,8 +233,7 @@ def run_streaming(metrics_port: int = 8004) -> None:
     )
     streaming_query_active.labels(query_name=QUERY_NAME).set(1)
     setup_graceful_shutdown(query, spark)
-    log.info("Gold daily summary stream running",
-             extra={"extra_data": {"query_id": str(query.id)}})
+    log.info("Gold daily summary stream running", extra={"extra_data": {"query_id": str(query.id)}})
 
     try:
         query.awaitTermination()
@@ -261,14 +264,17 @@ def run_batch(spark: SparkSession | None = None) -> None:
     )
 
     df = _aggregate(sensors, dim_metric, bridge)
-    df.write.format("delta").mode("overwrite") \
-        .option("overwriteSchema", "true").save(settings.gold_fact_vital_daily)
+    df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(
+        settings.gold_fact_vital_daily
+    )
     log.info(
         "fact_vital_daily_summary written",
-        extra={"extra_data": {
-            "row_count": df.count(),
-            "path": settings.gold_fact_vital_daily,
-        }},
+        extra={
+            "extra_data": {
+                "row_count": df.count(),
+                "path": settings.gold_fact_vital_daily,
+            }
+        },
     )
 
 

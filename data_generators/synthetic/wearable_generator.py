@@ -31,7 +31,7 @@ from datetime import datetime, timedelta
 from faker import Faker
 from kafka import KafkaProducer
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import settings  # noqa: E402
 from logger import get_logger  # noqa: E402
 
@@ -47,22 +47,30 @@ for i in range(100):
         "email": email,
         "name": fake.name(),
         "age": random.randint(22, 75),
-        "devices": []
+        "devices": [],
     }
 
     # Each user has 1-3 devices
     device_types = random.sample(
-        ["smartwatch", "chest_strap", "sleep_ring", "glucose_monitor"],
-        k=random.randint(1, 3)
+        ["smartwatch", "chest_strap", "sleep_ring", "glucose_monitor"], k=random.randint(1, 3)
     )
     for dtype in device_types:
-        prefix = {"smartwatch": "SW", "chest_strap": "CS", "sleep_ring": "SR", "glucose_monitor": "GM"}
+        prefix = {
+            "smartwatch": "SW",
+            "chest_strap": "CS",
+            "sleep_ring": "SR",
+            "glucose_monitor": "GM",
+        }
         device_id = f"{prefix[dtype]}-{fake.bothify('???-#####').upper()}"
-        user["devices"].append({
-            "device_id": device_id,
-            "device_type": dtype,
-            "firmware_version": f"{random.randint(2,4)}.{random.randint(0,9)}.{random.randint(0,9)}"
-        })
+        user["devices"].append(
+            {
+                "device_id": device_id,
+                "device_type": dtype,
+                "firmware_version": (
+                    f"{random.randint(2, 4)}.{random.randint(0, 9)}.{random.randint(0, 9)}"
+                ),
+            }
+        )
 
     USERS.append(user)
 
@@ -177,19 +185,21 @@ def main():
     total_devices = sum(len(u["devices"]) for u in USERS)
     log.info(
         "PulseTrack Wearable Generator starting",
-        extra={"extra_data": {
-            "kafka_bootstrap": settings.kafka_bootstrap,
-            "topic": settings.kafka_topic_sensor,
-            "users": len(USERS),
-            "devices": total_devices,
-            "events_per_second": settings.wearable_events_per_second,
-        }},
+        extra={
+            "extra_data": {
+                "kafka_bootstrap": settings.kafka_bootstrap,
+                "topic": settings.kafka_topic_sensor,
+                "users": len(USERS),
+                "devices": total_devices,
+                "events_per_second": settings.wearable_events_per_second,
+            }
+        },
     )
 
     producer = KafkaProducer(
         bootstrap_servers=settings.kafka_bootstrap,
-        value_serializer=lambda v: json.dumps(v).encode('utf-8'),
-        key_serializer=lambda k: k.encode('utf-8') if k else None,
+        value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+        key_serializer=lambda k: k.encode("utf-8") if k else None,
     )
 
     event_count = 0
@@ -221,12 +231,14 @@ def main():
             if event_count % 100 == 0:
                 log.info(
                     "Generator progress",
-                    extra={"extra_data": {
-                        "events": event_count,
-                        "late": late_count,
-                        "device_type": device["device_type"],
-                        "metric_sample": list(event["metrics"].keys())[:2],
-                    }},
+                    extra={
+                        "extra_data": {
+                            "events": event_count,
+                            "late": late_count,
+                            "device_type": device["device_type"],
+                            "metric_sample": list(event["metrics"].keys())[:2],
+                        }
+                    },
                 )
 
             time.sleep(1.0 / settings.wearable_events_per_second)

@@ -14,6 +14,7 @@ update the existing fact row in place. Records that fail to resolve a
 patient_key fall back to ``abs(hash(device_account_id))`` so unregistered
 devices still produce facts.
 """
+
 from __future__ import annotations
 
 import os
@@ -32,7 +33,7 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import settings  # noqa: E402
 from logger import get_logger  # noqa: E402
 from metrics import (  # noqa: E402
@@ -46,15 +47,17 @@ from utils.streaming import setup_graceful_shutdown  # noqa: E402
 log = get_logger(__name__)
 QUERY_NAME = "gold-fact-vital-reading"
 
-FACT_SCHEMA = StructType([
-    StructField("patient_key",      LongType(),      True),
-    StructField("metric_key",       LongType(),      True),
-    StructField("date_key",         IntegerType(),   True),
-    StructField("event_timestamp",  TimestampType(), True),
-    StructField("value",            DoubleType(),    True),
-    StructField("is_valid",         BooleanType(),   True),
-    StructField("is_late_arriving", BooleanType(),   True),
-])
+FACT_SCHEMA = StructType(
+    [
+        StructField("patient_key", LongType(), True),
+        StructField("metric_key", LongType(), True),
+        StructField("date_key", IntegerType(), True),
+        StructField("event_timestamp", TimestampType(), True),
+        StructField("value", DoubleType(), True),
+        StructField("is_valid", BooleanType(), True),
+        StructField("is_late_arriving", BooleanType(), True),
+    ]
+)
 
 
 def _seed_empty_table(spark: SparkSession) -> None:
@@ -71,12 +74,11 @@ def _build_facts(
 ) -> DataFrame:
     """Resolve keys + project Silver rows into the fact-grain DataFrame."""
     if bridge_df is not None:
-        device_to_patient = (
-            bridge_df.filter(F.col("identifier_type") == "device_account_id")
-            .select(
-                F.col("identifier_value").alias("device_account_id"),
-                F.abs(F.hash(F.col("patient_key"))).cast("long").alias("linked_patient_key"),
-            )
+        device_to_patient = bridge_df.filter(
+            F.col("identifier_type") == "device_account_id"
+        ).select(
+            F.col("identifier_value").alias("device_account_id"),
+            F.abs(F.hash(F.col("patient_key"))).cast("long").alias("linked_patient_key"),
         )
         silver = silver.join(device_to_patient, on="device_account_id", how="left")
     else:
@@ -96,21 +98,20 @@ def _build_facts(
         how="left",
     )
 
-    return (
-        silver.filter(F.col("metric_key").isNotNull())
-        .select(
-            F.col("patient_key"),
-            F.col("metric_key"),
-            (
-                F.year("event_timestamp") * 10000
-                + F.month("event_timestamp") * 100
-                + F.dayofmonth("event_timestamp")
-            ).cast(IntegerType()).alias("date_key"),
-            F.col("event_timestamp"),
-            F.col("metric_value").cast(DoubleType()).alias("value"),
-            F.col("is_valid"),
-            F.col("is_late_arriving"),
+    return silver.filter(F.col("metric_key").isNotNull()).select(
+        F.col("patient_key"),
+        F.col("metric_key"),
+        (
+            F.year("event_timestamp") * 10000
+            + F.month("event_timestamp") * 100
+            + F.dayofmonth("event_timestamp")
         )
+        .cast(IntegerType())
+        .alias("date_key"),
+        F.col("event_timestamp"),
+        F.col("metric_value").cast(DoubleType()).alias("value"),
+        F.col("is_valid"),
+        F.col("is_late_arriving"),
     )
 
 
@@ -144,6 +145,7 @@ def _make_processor(spark: SparkSession):
             "Gold vital_reading batch processed",
             extra={"extra_data": {"batch_id": batch_id, "merged_rows": n}},
         )
+
     return process
 
 
@@ -154,10 +156,12 @@ def run_streaming(metrics_port: int = 8005) -> None:
 
     log.info(
         "Gold fact_vital_reading stream starting",
-        extra={"extra_data": {
-            "source": settings.silver_sensor,
-            "sink": settings.gold_fact_vital_reading,
-        }},
+        extra={
+            "extra_data": {
+                "source": settings.silver_sensor,
+                "sink": settings.gold_fact_vital_reading,
+            }
+        },
     )
 
     silver_stream = (
@@ -167,8 +171,7 @@ def run_streaming(metrics_port: int = 8005) -> None:
     )
 
     query = (
-        silver_stream.writeStream
-        .foreachBatch(_make_processor(spark))
+        silver_stream.writeStream.foreachBatch(_make_processor(spark))
         .option("checkpointLocation", f"{settings.checkpoint_base}/gold_vital_reading")
         .trigger(processingTime=settings.trigger_interval)
         .queryName(QUERY_NAME)
@@ -202,10 +205,12 @@ def run_batch(spark: SparkSession | None = None) -> None:
     n = _merge_facts(spark, facts)
     log.info(
         "fact_vital_reading written",
-        extra={"extra_data": {
-            "row_count": n,
-            "path": settings.gold_fact_vital_reading,
-        }},
+        extra={
+            "extra_data": {
+                "row_count": n,
+                "path": settings.gold_fact_vital_reading,
+            }
+        },
     )
 
 

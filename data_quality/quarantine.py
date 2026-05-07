@@ -8,6 +8,7 @@ Delta table per layer.
 The schema is intentionally permissive (`mergeSchema=true`): callers stream
 arbitrary DataFrames in, and the quarantine table grows columns over time.
 """
+
 from __future__ import annotations
 
 import os
@@ -17,7 +18,7 @@ from typing import Optional
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import settings  # noqa: E402
 from logger import get_logger  # noqa: E402
 from metrics import records_quarantined  # noqa: E402
@@ -44,16 +45,15 @@ def quarantine_records(
     bad = (
         df.filter(F.col(validity_col) == F.lit(False))
         .withColumn("quarantine_reason", F.lit(reason or validity_col))
-        .withColumn("quarantine_layer",  F.lit(layer))
+        .withColumn("quarantine_layer", F.lit(layer))
         .withColumn("quarantine_source", F.lit(source))
-        .withColumn("quarantined_at",    F.current_timestamp())
+        .withColumn("quarantined_at", F.current_timestamp())
     ).cache()
 
     n = bad.count()
     if n > 0:
         (
-            bad.write
-            .format("delta")
+            bad.write.format("delta")
             .mode("append")
             .option("mergeSchema", "true")
             .save(settings.quarantine)
@@ -61,13 +61,15 @@ def quarantine_records(
         records_quarantined.labels(layer=layer).inc(n)
         log.warning(
             "Records quarantined",
-            extra={"extra_data": {
-                "layer": layer,
-                "source": source,
-                "reason": reason or validity_col,
-                "row_count": n,
-                "path": settings.quarantine,
-            }},
+            extra={
+                "extra_data": {
+                    "layer": layer,
+                    "source": source,
+                    "reason": reason or validity_col,
+                    "row_count": n,
+                    "path": settings.quarantine,
+                }
+            },
         )
     bad.unpersist()
     return n

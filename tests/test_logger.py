@@ -1,7 +1,7 @@
 """Structured JSON logger emits well-formed records."""
+
 from __future__ import annotations
 
-import io
 import json
 import logging
 
@@ -10,8 +10,13 @@ from logger import JSONFormatter, get_logger
 
 def _make_record(level: int, msg: str, name: str, **extra) -> logging.LogRecord:
     record = logging.LogRecord(
-        name=name, level=level, pathname=__file__, lineno=42,
-        msg=msg, args=(), exc_info=None,
+        name=name,
+        level=level,
+        pathname=__file__,
+        lineno=42,
+        msg=msg,
+        args=(),
+        exc_info=None,
     )
     if extra:
         record.extra_data = extra

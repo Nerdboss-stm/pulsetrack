@@ -8,6 +8,7 @@ confluent-kafka client.
 Subjects follow the standard `<topic>-value` naming convention.
 Run `python schemas/registry.py` to register all schemas at startup.
 """
+
 from __future__ import annotations
 
 import os
@@ -18,7 +19,7 @@ from typing import Callable, Optional
 from confluent_kafka.schema_registry import Schema, SchemaRegistryClient
 from confluent_kafka.schema_registry.avro import AvroDeserializer, AvroSerializer
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import settings  # noqa: E402
 from logger import get_logger  # noqa: E402
 
@@ -53,11 +54,13 @@ def register_all_schemas() -> dict[str, int]:
         registered[subject] = schema_id
         log.info(
             "Registered Avro schema",
-            extra={"extra_data": {
-                "subject": subject,
-                "schema_id": schema_id,
-                "file": filename,
-            }},
+            extra={
+                "extra_data": {
+                    "subject": subject,
+                    "schema_id": schema_id,
+                    "file": filename,
+                }
+            },
         )
     return registered
 

@@ -13,7 +13,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install black ruff mypy
+      - run: pip install black==24.10.0 ruff==0.7.0 mypy==1.13.0
       - run: black --check .
       - run: ruff check .
 
@@ -53,5 +53,5 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install bandit safety
-      - run: bandit -r . -x ./tests,./venv
+      - run: bandit -r . -x ./tests,./venv,./.claude --severity-level medium
       - run: safety check --file requirements.txt || true

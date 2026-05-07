@@ -13,6 +13,7 @@ Each simulated patient has:
 This produces data that LOOKS real to a clinician reviewing dashboards,
 not random noise that any domain expert would spot as fake in 2 seconds.
 """
+
 from __future__ import annotations
 
 import math
@@ -33,70 +34,74 @@ class ActivityState(str, Enum):
 
 # ── Activity-driven physiological deltas (above resting baseline) ─────────────
 ACTIVITY_HR_DELTA: dict[ActivityState, float] = {
-    ActivityState.SLEEPING:           -10.0,
-    ActivityState.RESTING:              0.0,
-    ActivityState.LIGHT_ACTIVITY:      20.0,
-    ActivityState.MODERATE_EXERCISE:   50.0,
-    ActivityState.VIGOROUS_EXERCISE:   90.0,
+    ActivityState.SLEEPING: -10.0,
+    ActivityState.RESTING: 0.0,
+    ActivityState.LIGHT_ACTIVITY: 20.0,
+    ActivityState.MODERATE_EXERCISE: 50.0,
+    ActivityState.VIGOROUS_EXERCISE: 90.0,
 }
 
 ACTIVITY_SPO2_DELTA: dict[ActivityState, float] = {
-    ActivityState.SLEEPING:             0.0,
-    ActivityState.RESTING:              0.0,
-    ActivityState.LIGHT_ACTIVITY:      -0.3,
-    ActivityState.MODERATE_EXERCISE:   -1.0,
-    ActivityState.VIGOROUS_EXERCISE:   -2.0,
+    ActivityState.SLEEPING: 0.0,
+    ActivityState.RESTING: 0.0,
+    ActivityState.LIGHT_ACTIVITY: -0.3,
+    ActivityState.MODERATE_EXERCISE: -1.0,
+    ActivityState.VIGOROUS_EXERCISE: -2.0,
 }
 
 # HRV is *higher* at rest, suppressed during exercise
 ACTIVITY_HRV_DELTA: dict[ActivityState, float] = {
-    ActivityState.SLEEPING:            10.0,
-    ActivityState.RESTING:              0.0,
-    ActivityState.LIGHT_ACTIVITY:     -10.0,
-    ActivityState.MODERATE_EXERCISE:  -25.0,
-    ActivityState.VIGOROUS_EXERCISE:  -35.0,
+    ActivityState.SLEEPING: 10.0,
+    ActivityState.RESTING: 0.0,
+    ActivityState.LIGHT_ACTIVITY: -10.0,
+    ActivityState.MODERATE_EXERCISE: -25.0,
+    ActivityState.VIGOROUS_EXERCISE: -35.0,
 }
 
 ACTIVITY_TEMP_DELTA: dict[ActivityState, float] = {
-    ActivityState.SLEEPING:            -0.3,
-    ActivityState.RESTING:              0.0,
-    ActivityState.LIGHT_ACTIVITY:       0.1,
-    ActivityState.MODERATE_EXERCISE:    0.3,
-    ActivityState.VIGOROUS_EXERCISE:    0.6,
+    ActivityState.SLEEPING: -0.3,
+    ActivityState.RESTING: 0.0,
+    ActivityState.LIGHT_ACTIVITY: 0.1,
+    ActivityState.MODERATE_EXERCISE: 0.3,
+    ActivityState.VIGOROUS_EXERCISE: 0.6,
 }
 
 ACTIVITY_RR_DELTA: dict[ActivityState, float] = {
-    ActivityState.SLEEPING:            -2.0,
-    ActivityState.RESTING:              0.0,
-    ActivityState.LIGHT_ACTIVITY:       4.0,
-    ActivityState.MODERATE_EXERCISE:   10.0,
-    ActivityState.VIGOROUS_EXERCISE:   18.0,
+    ActivityState.SLEEPING: -2.0,
+    ActivityState.RESTING: 0.0,
+    ActivityState.LIGHT_ACTIVITY: 4.0,
+    ActivityState.MODERATE_EXERCISE: 10.0,
+    ActivityState.VIGOROUS_EXERCISE: 18.0,
 }
 
 ACTIVITY_BP_SYS_DELTA: dict[ActivityState, float] = {
-    ActivityState.SLEEPING:            -8.0,
-    ActivityState.RESTING:              0.0,
-    ActivityState.LIGHT_ACTIVITY:       8.0,
-    ActivityState.MODERATE_EXERCISE:   25.0,
-    ActivityState.VIGOROUS_EXERCISE:   45.0,
+    ActivityState.SLEEPING: -8.0,
+    ActivityState.RESTING: 0.0,
+    ActivityState.LIGHT_ACTIVITY: 8.0,
+    ActivityState.MODERATE_EXERCISE: 25.0,
+    ActivityState.VIGOROUS_EXERCISE: 45.0,
 }
 
 # Steps emitted per second per activity state (stochastic)
 ACTIVITY_STEPS_PER_SEC: dict[ActivityState, float] = {
-    ActivityState.SLEEPING:             0.00,
-    ActivityState.RESTING:              0.05,
-    ActivityState.LIGHT_ACTIVITY:       1.50,
-    ActivityState.MODERATE_EXERCISE:    2.50,
-    ActivityState.VIGOROUS_EXERCISE:    3.00,
+    ActivityState.SLEEPING: 0.00,
+    ActivityState.RESTING: 0.05,
+    ActivityState.LIGHT_ACTIVITY: 1.50,
+    ActivityState.MODERATE_EXERCISE: 2.50,
+    ActivityState.VIGOROUS_EXERCISE: 3.00,
 }
 
 
 # ── Markov transition matrix, conditioned on time-of-day bucket ───────────────
 def _bucket(hour_float: float) -> str:
-    if 0 <= hour_float < 6:    return "night"
-    if 6 <= hour_float < 9:    return "morning"
-    if 9 <= hour_float < 17:   return "day"
-    if 17 <= hour_float < 22:  return "evening"
+    if 0 <= hour_float < 6:
+        return "night"
+    if 6 <= hour_float < 9:
+        return "morning"
+    if 9 <= hour_float < 17:
+        return "day"
+    if 17 <= hour_float < 22:
+        return "evening"
     return "late_evening"
 
 
@@ -104,39 +109,108 @@ def _bucket(hour_float: float) -> str:
 # Each row sums to 1 (within float tolerance).
 TRANSITIONS: dict[str, dict[ActivityState, dict[ActivityState, float]]] = {
     "night": {
-        ActivityState.SLEEPING:          {ActivityState.SLEEPING: 0.97, ActivityState.RESTING: 0.03},
-        ActivityState.RESTING:           {ActivityState.SLEEPING: 0.60, ActivityState.RESTING: 0.40},
-        ActivityState.LIGHT_ACTIVITY:    {ActivityState.RESTING: 0.60, ActivityState.LIGHT_ACTIVITY: 0.40},
-        ActivityState.MODERATE_EXERCISE: {ActivityState.RESTING: 0.50, ActivityState.LIGHT_ACTIVITY: 0.40, ActivityState.MODERATE_EXERCISE: 0.10},
-        ActivityState.VIGOROUS_EXERCISE: {ActivityState.RESTING: 0.60, ActivityState.LIGHT_ACTIVITY: 0.40},
+        ActivityState.SLEEPING: {ActivityState.SLEEPING: 0.97, ActivityState.RESTING: 0.03},
+        ActivityState.RESTING: {ActivityState.SLEEPING: 0.60, ActivityState.RESTING: 0.40},
+        ActivityState.LIGHT_ACTIVITY: {
+            ActivityState.RESTING: 0.60,
+            ActivityState.LIGHT_ACTIVITY: 0.40,
+        },
+        ActivityState.MODERATE_EXERCISE: {
+            ActivityState.RESTING: 0.50,
+            ActivityState.LIGHT_ACTIVITY: 0.40,
+            ActivityState.MODERATE_EXERCISE: 0.10,
+        },
+        ActivityState.VIGOROUS_EXERCISE: {
+            ActivityState.RESTING: 0.60,
+            ActivityState.LIGHT_ACTIVITY: 0.40,
+        },
     },
     "morning": {
-        ActivityState.SLEEPING:          {ActivityState.SLEEPING: 0.55, ActivityState.RESTING: 0.45},
-        ActivityState.RESTING:           {ActivityState.RESTING: 0.55, ActivityState.LIGHT_ACTIVITY: 0.35, ActivityState.MODERATE_EXERCISE: 0.10},
-        ActivityState.LIGHT_ACTIVITY:    {ActivityState.LIGHT_ACTIVITY: 0.55, ActivityState.RESTING: 0.30, ActivityState.MODERATE_EXERCISE: 0.15},
-        ActivityState.MODERATE_EXERCISE: {ActivityState.MODERATE_EXERCISE: 0.50, ActivityState.LIGHT_ACTIVITY: 0.40, ActivityState.VIGOROUS_EXERCISE: 0.10},
-        ActivityState.VIGOROUS_EXERCISE: {ActivityState.VIGOROUS_EXERCISE: 0.40, ActivityState.MODERATE_EXERCISE: 0.40, ActivityState.LIGHT_ACTIVITY: 0.20},
+        ActivityState.SLEEPING: {ActivityState.SLEEPING: 0.55, ActivityState.RESTING: 0.45},
+        ActivityState.RESTING: {
+            ActivityState.RESTING: 0.55,
+            ActivityState.LIGHT_ACTIVITY: 0.35,
+            ActivityState.MODERATE_EXERCISE: 0.10,
+        },
+        ActivityState.LIGHT_ACTIVITY: {
+            ActivityState.LIGHT_ACTIVITY: 0.55,
+            ActivityState.RESTING: 0.30,
+            ActivityState.MODERATE_EXERCISE: 0.15,
+        },
+        ActivityState.MODERATE_EXERCISE: {
+            ActivityState.MODERATE_EXERCISE: 0.50,
+            ActivityState.LIGHT_ACTIVITY: 0.40,
+            ActivityState.VIGOROUS_EXERCISE: 0.10,
+        },
+        ActivityState.VIGOROUS_EXERCISE: {
+            ActivityState.VIGOROUS_EXERCISE: 0.40,
+            ActivityState.MODERATE_EXERCISE: 0.40,
+            ActivityState.LIGHT_ACTIVITY: 0.20,
+        },
     },
     "day": {
-        ActivityState.SLEEPING:          {ActivityState.RESTING: 0.70, ActivityState.SLEEPING: 0.30},
-        ActivityState.RESTING:           {ActivityState.RESTING: 0.50, ActivityState.LIGHT_ACTIVITY: 0.40, ActivityState.MODERATE_EXERCISE: 0.10},
-        ActivityState.LIGHT_ACTIVITY:    {ActivityState.LIGHT_ACTIVITY: 0.55, ActivityState.RESTING: 0.30, ActivityState.MODERATE_EXERCISE: 0.15},
-        ActivityState.MODERATE_EXERCISE: {ActivityState.MODERATE_EXERCISE: 0.55, ActivityState.LIGHT_ACTIVITY: 0.35, ActivityState.VIGOROUS_EXERCISE: 0.10},
-        ActivityState.VIGOROUS_EXERCISE: {ActivityState.VIGOROUS_EXERCISE: 0.50, ActivityState.MODERATE_EXERCISE: 0.40, ActivityState.LIGHT_ACTIVITY: 0.10},
+        ActivityState.SLEEPING: {ActivityState.RESTING: 0.70, ActivityState.SLEEPING: 0.30},
+        ActivityState.RESTING: {
+            ActivityState.RESTING: 0.50,
+            ActivityState.LIGHT_ACTIVITY: 0.40,
+            ActivityState.MODERATE_EXERCISE: 0.10,
+        },
+        ActivityState.LIGHT_ACTIVITY: {
+            ActivityState.LIGHT_ACTIVITY: 0.55,
+            ActivityState.RESTING: 0.30,
+            ActivityState.MODERATE_EXERCISE: 0.15,
+        },
+        ActivityState.MODERATE_EXERCISE: {
+            ActivityState.MODERATE_EXERCISE: 0.55,
+            ActivityState.LIGHT_ACTIVITY: 0.35,
+            ActivityState.VIGOROUS_EXERCISE: 0.10,
+        },
+        ActivityState.VIGOROUS_EXERCISE: {
+            ActivityState.VIGOROUS_EXERCISE: 0.50,
+            ActivityState.MODERATE_EXERCISE: 0.40,
+            ActivityState.LIGHT_ACTIVITY: 0.10,
+        },
     },
     "evening": {
-        ActivityState.SLEEPING:          {ActivityState.RESTING: 0.70, ActivityState.SLEEPING: 0.30},
-        ActivityState.RESTING:           {ActivityState.RESTING: 0.55, ActivityState.LIGHT_ACTIVITY: 0.35, ActivityState.MODERATE_EXERCISE: 0.10},
-        ActivityState.LIGHT_ACTIVITY:    {ActivityState.LIGHT_ACTIVITY: 0.50, ActivityState.RESTING: 0.40, ActivityState.MODERATE_EXERCISE: 0.10},
-        ActivityState.MODERATE_EXERCISE: {ActivityState.MODERATE_EXERCISE: 0.50, ActivityState.LIGHT_ACTIVITY: 0.40, ActivityState.VIGOROUS_EXERCISE: 0.10},
-        ActivityState.VIGOROUS_EXERCISE: {ActivityState.VIGOROUS_EXERCISE: 0.40, ActivityState.MODERATE_EXERCISE: 0.40, ActivityState.LIGHT_ACTIVITY: 0.20},
+        ActivityState.SLEEPING: {ActivityState.RESTING: 0.70, ActivityState.SLEEPING: 0.30},
+        ActivityState.RESTING: {
+            ActivityState.RESTING: 0.55,
+            ActivityState.LIGHT_ACTIVITY: 0.35,
+            ActivityState.MODERATE_EXERCISE: 0.10,
+        },
+        ActivityState.LIGHT_ACTIVITY: {
+            ActivityState.LIGHT_ACTIVITY: 0.50,
+            ActivityState.RESTING: 0.40,
+            ActivityState.MODERATE_EXERCISE: 0.10,
+        },
+        ActivityState.MODERATE_EXERCISE: {
+            ActivityState.MODERATE_EXERCISE: 0.50,
+            ActivityState.LIGHT_ACTIVITY: 0.40,
+            ActivityState.VIGOROUS_EXERCISE: 0.10,
+        },
+        ActivityState.VIGOROUS_EXERCISE: {
+            ActivityState.VIGOROUS_EXERCISE: 0.40,
+            ActivityState.MODERATE_EXERCISE: 0.40,
+            ActivityState.LIGHT_ACTIVITY: 0.20,
+        },
     },
     "late_evening": {
-        ActivityState.SLEEPING:          {ActivityState.SLEEPING: 0.95, ActivityState.RESTING: 0.05},
-        ActivityState.RESTING:           {ActivityState.RESTING: 0.65, ActivityState.SLEEPING: 0.35},
-        ActivityState.LIGHT_ACTIVITY:    {ActivityState.RESTING: 0.60, ActivityState.LIGHT_ACTIVITY: 0.30, ActivityState.SLEEPING: 0.10},
-        ActivityState.MODERATE_EXERCISE: {ActivityState.LIGHT_ACTIVITY: 0.50, ActivityState.RESTING: 0.40, ActivityState.MODERATE_EXERCISE: 0.10},
-        ActivityState.VIGOROUS_EXERCISE: {ActivityState.LIGHT_ACTIVITY: 0.60, ActivityState.RESTING: 0.40},
+        ActivityState.SLEEPING: {ActivityState.SLEEPING: 0.95, ActivityState.RESTING: 0.05},
+        ActivityState.RESTING: {ActivityState.RESTING: 0.65, ActivityState.SLEEPING: 0.35},
+        ActivityState.LIGHT_ACTIVITY: {
+            ActivityState.RESTING: 0.60,
+            ActivityState.LIGHT_ACTIVITY: 0.30,
+            ActivityState.SLEEPING: 0.10,
+        },
+        ActivityState.MODERATE_EXERCISE: {
+            ActivityState.LIGHT_ACTIVITY: 0.50,
+            ActivityState.RESTING: 0.40,
+            ActivityState.MODERATE_EXERCISE: 0.10,
+        },
+        ActivityState.VIGOROUS_EXERCISE: {
+            ActivityState.LIGHT_ACTIVITY: 0.60,
+            ActivityState.RESTING: 0.40,
+        },
     },
 }
 
@@ -145,14 +219,15 @@ TRANSITIONS: dict[str, dict[ActivityState, dict[ActivityState, float]]] = {
 @dataclass
 class PatientProfile:
     """Per-patient physiology + ongoing activity state."""
+
     patient_id: str
     age: int
-    sex: str                                  # "M" or "F"
-    resting_hr: float                         # bpm
-    resting_spo2: float                       # %
-    resting_hrv: float                        # ms (RMSSD-like)
-    resting_temp: float                       # °C, skin/oral
-    anomaly_rate: float = 0.005               # per-reading anomaly probability
+    sex: str  # "M" or "F"
+    resting_hr: float  # bpm
+    resting_spo2: float  # %
+    resting_hrv: float  # ms (RMSSD-like)
+    resting_temp: float  # °C, skin/oral
+    anomaly_rate: float = 0.005  # per-reading anomaly probability
     current_state: ActivityState = ActivityState.RESTING
     _last_anomaly: str | None = field(default=None, repr=False)
 
@@ -227,21 +302,10 @@ def generate_reading(profile: PatientProfile, timestamp: datetime) -> dict:
     hour = timestamp.hour + timestamp.minute / 60.0
 
     hr = (
-        profile.resting_hr
-        + _circadian_hr(hour)
-        + ACTIVITY_HR_DELTA[state]
-        + random.gauss(0.0, 2.0)
+        profile.resting_hr + _circadian_hr(hour) + ACTIVITY_HR_DELTA[state] + random.gauss(0.0, 2.0)
     )
-    spo2 = (
-        profile.resting_spo2
-        + ACTIVITY_SPO2_DELTA[state]
-        + random.gauss(0.0, 0.3)
-    )
-    hrv = (
-        profile.resting_hrv
-        + ACTIVITY_HRV_DELTA[state]
-        + random.gauss(0.0, 4.0)
-    )
+    spo2 = profile.resting_spo2 + ACTIVITY_SPO2_DELTA[state] + random.gauss(0.0, 0.3)
+    hrv = profile.resting_hrv + ACTIVITY_HRV_DELTA[state] + random.gauss(0.0, 4.0)
     temp = (
         profile.resting_temp
         + _circadian_temp(hour)
@@ -266,18 +330,18 @@ def generate_reading(profile: PatientProfile, timestamp: datetime) -> dict:
     profile._last_anomaly = anomaly
 
     # Clamp to physiologically-possible ranges
-    hr   = max(35.0,  min(220.0, hr))
-    spo2 = max(70.0,  min(100.0, spo2))
-    hrv  = max(5.0,   min(200.0, hrv))
-    temp = max(34.0,  min(42.0,  temp))
+    hr = max(35.0, min(220.0, hr))
+    spo2 = max(70.0, min(100.0, spo2))
+    hrv = max(5.0, min(200.0, hrv))
+    temp = max(34.0, min(42.0, temp))
 
     return {
-        "heart_rate_bpm":    round(hr, 1),
-        "spo2_pct":          round(spo2, 1),
-        "hrv_ms":            round(hrv, 1),
+        "heart_rate_bpm": round(hr, 1),
+        "spo2_pct": round(spo2, 1),
+        "hrv_ms": round(hrv, 1),
         "skin_temp_celsius": round(temp, 2),
-        "activity_state":    state.value,
-        "anomaly":           anomaly,
+        "activity_state": state.value,
+        "anomaly": anomaly,
     }
 
 

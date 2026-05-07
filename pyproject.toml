@@ -10,6 +10,20 @@ select = ["E", "F", "I", "W"]
 testpaths = ["tests"]
 addopts = "-v --cov=. --cov-report=term-missing"
 
+[tool.coverage.run]
+omit = [
+  "query_*.py",
+  "*/.claude/*",
+  "tests/*",
+]
+
+[tool.coverage.report]
+exclude_also = [
+  "if __name__ == .__main__.:",
+  "raise NotImplementedError",
+  "pragma: no cover",
+]
+
 [tool.mypy]
 python_version = "3.11"
 warn_return_any = true

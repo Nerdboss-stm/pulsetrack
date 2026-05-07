@@ -15,6 +15,7 @@ Polling strategy:
 - Write as JSON bundles to ``<settings.ehr_batch_dir>/YYYY-MM-DD/``
 - Each batch = 1 day of hospital EHR export
 """
+
 from __future__ import annotations
 
 import json
@@ -28,7 +29,7 @@ from typing import Any
 import requests
 from fhir.resources.bundle import Bundle
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import settings  # noqa: E402
 from logger import get_logger  # noqa: E402
 from metrics import (  # noqa: E402
@@ -76,8 +77,9 @@ class FHIRBatchProducer:
             text = self._request(url, params)
         except requests.RequestException as exc:
             records_failed.labels(layer="bronze", source="fhir", reason="api_error").inc()
-            log.error("HAPI FHIR fetch failed",
-                      extra={"extra_data": {"url": url, "error": str(exc)}})
+            log.error(
+                "HAPI FHIR fetch failed", extra={"extra_data": {"url": url, "error": str(exc)}}
+            )
             return None
         time.sleep(self.request_delay)
         return _parse_bundle(text)
@@ -123,8 +125,10 @@ class FHIRBatchProducer:
         batch_dir = self.output_dir / date_str
         batch_dir.mkdir(parents=True, exist_ok=True)
 
-        log.info("FHIR batch starting",
-                 extra={"extra_data": {"date": date_str, "patients": patient_count}})
+        log.info(
+            "FHIR batch starting",
+            extra={"extra_data": {"date": date_str, "patients": patient_count}},
+        )
 
         patients = self.fetch_patients(patient_count)
         bundles: list[dict] = []
@@ -135,28 +139,40 @@ class FHIRBatchProducer:
             conditions = self.fetch_conditions_for_patient(pid)
             medications = self.fetch_medications_for_patient(pid)
             observations = self.fetch_observations_for_patient(pid)
-            bundles.append({
-                "patient": _to_dict(patient),
-                "conditions":   [_to_dict(c) for c in conditions],
-                "medications":  [_to_dict(m) for m in medications],
-                "observations": [_to_dict(o) for o in observations],
-            })
+            bundles.append(
+                {
+                    "patient": _to_dict(patient),
+                    "conditions": [_to_dict(c) for c in conditions],
+                    "medications": [_to_dict(m) for m in medications],
+                    "observations": [_to_dict(o) for o in observations],
+                }
+            )
             records_processed.labels(layer="bronze", source="fhir").inc()
 
         out_path = batch_dir / "ehr_batch.json"
-        out_path.write_text(json.dumps({
-            "batch_date": date_str,
-            "patient_count": len(bundles),
-            "patients": bundles,
-            "generated_at": datetime.utcnow().isoformat() + "Z",
-            "source": "hapi_fhir_r4",
-        }, indent=2, default=str))
+        out_path.write_text(
+            json.dumps(
+                {
+                    "batch_date": date_str,
+                    "patient_count": len(bundles),
+                    "patients": bundles,
+                    "generated_at": datetime.utcnow().isoformat() + "Z",
+                    "source": "hapi_fhir_r4",
+                },
+                indent=2,
+                default=str,
+            )
+        )
 
-        log.info("FHIR batch written",
-                 extra={"extra_data": {
-                     "path": str(out_path),
-                     "patients": len(bundles),
-                 }})
+        log.info(
+            "FHIR batch written",
+            extra={
+                "extra_data": {
+                    "path": str(out_path),
+                    "patients": len(bundles),
+                }
+            },
+        )
         return out_path
 
     def run(self, patient_count: int = 50) -> None:

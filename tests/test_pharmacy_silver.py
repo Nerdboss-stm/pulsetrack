@@ -8,6 +8,7 @@ the pharmacy_events topic, but no Spark job materializes the Silver table.
 When that job lands, replace these skips with parsing + quality-flag tests
 analogous to test_sensor_silver.py.
 """
+
 from __future__ import annotations
 
 import pytest

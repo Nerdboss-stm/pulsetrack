@@ -5,6 +5,7 @@ All paths, endpoints, and tunables live here. Override any field by setting
 PT_<FIELD>=value as an environment variable, or by creating a .env file.
 Source modules import `settings` and reference attributes — no hardcoded paths.
 """
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,7 +18,9 @@ class Settings(BaseSettings):
     kafka_topic_dlq: str = "pulsetrack_dlq"
 
     # ── Lakehouse base paths ────────────────────────────────────────────
-    lakehouse_base: str = "/tmp/pulsetrack-lakehouse"
+    lakehouse_base: str = (
+        "/tmp/pulsetrack-lakehouse"  # nosec B108 - dev default, prod sets PT_LAKEHOUSE_BASE to s3://...
+    )
     ehr_batch_dir: str = "data/ehr_batches"
 
     # ── API endpoints ───────────────────────────────────────────────────

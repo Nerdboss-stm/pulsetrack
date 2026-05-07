@@ -25,7 +25,7 @@ from datetime import datetime, timedelta
 
 from faker import Faker
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import settings  # noqa: E402
 from logger import get_logger  # noqa: E402
 
@@ -33,21 +33,66 @@ log = get_logger(__name__)
 fake = Faker()
 
 ICD10_CONDITIONS = [
-    {"code": "E11.9", "desc": "Type 2 diabetes without complications", "category": "Endocrine", "chronic": True},
+    {
+        "code": "E11.9",
+        "desc": "Type 2 diabetes without complications",
+        "category": "Endocrine",
+        "chronic": True,
+    },
     {"code": "I10", "desc": "Essential hypertension", "category": "Circulatory", "chronic": True},
-    {"code": "J45.20", "desc": "Mild intermittent asthma, uncomplicated", "category": "Respiratory", "chronic": True},
-    {"code": "E78.5", "desc": "Hyperlipidemia, unspecified", "category": "Endocrine", "chronic": True},
-    {"code": "F32.1", "desc": "Major depressive disorder, single episode, moderate", "category": "Mental", "chronic": False},
+    {
+        "code": "J45.20",
+        "desc": "Mild intermittent asthma, uncomplicated",
+        "category": "Respiratory",
+        "chronic": True,
+    },
+    {
+        "code": "E78.5",
+        "desc": "Hyperlipidemia, unspecified",
+        "category": "Endocrine",
+        "chronic": True,
+    },
+    {
+        "code": "F32.1",
+        "desc": "Major depressive disorder, single episode, moderate",
+        "category": "Mental",
+        "chronic": False,
+    },
     {"code": "M54.5", "desc": "Low back pain", "category": "Musculoskeletal", "chronic": False},
     {"code": "K21.0", "desc": "GERD with esophagitis", "category": "Digestive", "chronic": True},
 ]
 
 MEDICATIONS = [
-    {"name": "metformin", "generic": "Metformin HCl", "class": "Biguanides", "dosages": ["500mg", "850mg", "1000mg"]},
-    {"name": "lisinopril", "generic": "Lisinopril", "class": "ACE Inhibitors", "dosages": ["5mg", "10mg", "20mg"]},
-    {"name": "albuterol", "generic": "Albuterol Sulfate", "class": "Bronchodilators", "dosages": ["90mcg"]},
-    {"name": "atorvastatin", "generic": "Atorvastatin Calcium", "class": "Statins", "dosages": ["10mg", "20mg", "40mg"]},
-    {"name": "sertraline", "generic": "Sertraline HCl", "class": "SSRIs", "dosages": ["25mg", "50mg", "100mg"]},
+    {
+        "name": "metformin",
+        "generic": "Metformin HCl",
+        "class": "Biguanides",
+        "dosages": ["500mg", "850mg", "1000mg"],
+    },
+    {
+        "name": "lisinopril",
+        "generic": "Lisinopril",
+        "class": "ACE Inhibitors",
+        "dosages": ["5mg", "10mg", "20mg"],
+    },
+    {
+        "name": "albuterol",
+        "generic": "Albuterol Sulfate",
+        "class": "Bronchodilators",
+        "dosages": ["90mcg"],
+    },
+    {
+        "name": "atorvastatin",
+        "generic": "Atorvastatin Calcium",
+        "class": "Statins",
+        "dosages": ["10mg", "20mg", "40mg"],
+    },
+    {
+        "name": "sertraline",
+        "generic": "Sertraline HCl",
+        "class": "SSRIs",
+        "dosages": ["25mg", "50mg", "100mg"],
+    },
     {"name": "omeprazole", "generic": "Omeprazole", "class": "PPIs", "dosages": ["20mg", "40mg"]},
 ]
 
@@ -70,21 +115,22 @@ def generate_patient_bundle(patient_mrn):
 
     for cond in patient_conditions:
         onset_days_ago = random.randint(30, 2000)
-        status = random.choices(
-            ["active", "remission", "resolved"],
-            weights=[0.7, 0.15, 0.15]
-        )[0]
+        status = random.choices(["active", "remission", "resolved"], weights=[0.7, 0.15, 0.15])[0]
 
-        entries.append({
-            "resource_type": "Condition",
-            "code": cond["code"],
-            "description": cond["desc"],
-            "category": cond["category"],
-            "is_chronic": cond["chronic"],
-            "onset_date": (datetime.utcnow() - timedelta(days=onset_days_ago)).strftime("%Y-%m-%d"),
-            "status": status,
-            "clinician_npi": f"NPI-{random.randint(1000000000, 9999999999)}",
-        })
+        entries.append(
+            {
+                "resource_type": "Condition",
+                "code": cond["code"],
+                "description": cond["desc"],
+                "category": cond["category"],
+                "is_chronic": cond["chronic"],
+                "onset_date": (datetime.utcnow() - timedelta(days=onset_days_ago)).strftime(
+                    "%Y-%m-%d"
+                ),
+                "status": status,
+                "clinician_npi": f"NPI-{random.randint(1000000000, 9999999999)}",
+            }
+        )
 
     # 0-3 medications
     num_meds = random.randint(0, 3)
@@ -94,18 +140,28 @@ def generate_patient_bundle(patient_mrn):
         start_days_ago = random.randint(10, 1000)
         is_active = random.random() < 0.8
 
-        entries.append({
-            "resource_type": "MedicationStatement",
-            "medication": med["name"],
-            "generic_name": med["generic"],
-            "drug_class": med["class"],
-            "dosage": random.choice(med["dosages"]),
-            "frequency": random.choice(["once_daily", "twice_daily", "as_needed"]),
-            "start_date": (datetime.utcnow() - timedelta(days=start_days_ago)).strftime("%Y-%m-%d"),
-            "end_date": None if is_active else (datetime.utcnow() - timedelta(days=random.randint(1, start_days_ago))).strftime("%Y-%m-%d"),
-            "status": "active" if is_active else "stopped",
-            "prescriber_npi": f"NPI-{random.randint(1000000000, 9999999999)}",
-        })
+        entries.append(
+            {
+                "resource_type": "MedicationStatement",
+                "medication": med["name"],
+                "generic_name": med["generic"],
+                "drug_class": med["class"],
+                "dosage": random.choice(med["dosages"]),
+                "frequency": random.choice(["once_daily", "twice_daily", "as_needed"]),
+                "start_date": (datetime.utcnow() - timedelta(days=start_days_ago)).strftime(
+                    "%Y-%m-%d"
+                ),
+                "end_date": (
+                    None
+                    if is_active
+                    else (
+                        datetime.utcnow() - timedelta(days=random.randint(1, start_days_ago))
+                    ).strftime("%Y-%m-%d")
+                ),
+                "status": "active" if is_active else "stopped",
+                "prescriber_npi": f"NPI-{random.randint(1000000000, 9999999999)}",
+            }
+        )
 
     # 0-2 lab results
     num_labs = random.randint(0, 2)
@@ -113,16 +169,20 @@ def generate_patient_bundle(patient_mrn):
 
     for lab in patient_labs:
         value = round(random.uniform(lab["normal_low"] * 0.7, lab["normal_high"] * 1.5), 1)
-        entries.append({
-            "resource_type": "Observation",
-            "code": lab["code"],
-            "value": value,
-            "unit": lab["unit"],
-            "reference_low": lab["normal_low"],
-            "reference_high": lab["normal_high"],
-            "is_abnormal": value < lab["normal_low"] or value > lab["normal_high"],
-            "date": (datetime.utcnow() - timedelta(days=random.randint(0, 90))).strftime("%Y-%m-%d"),
-        })
+        entries.append(
+            {
+                "resource_type": "Observation",
+                "code": lab["code"],
+                "value": value,
+                "unit": lab["unit"],
+                "reference_low": lab["normal_low"],
+                "reference_high": lab["normal_high"],
+                "is_abnormal": value < lab["normal_low"] or value > lab["normal_high"],
+                "date": (datetime.utcnow() - timedelta(days=random.randint(0, 90))).strftime(
+                    "%Y-%m-%d"
+                ),
+            }
+        )
 
     return {
         "resource_type": "Bundle",
@@ -151,8 +211,12 @@ def generate_daily_batch(date_str=None, num_patients=50):
         patients.append(bundle)
 
     output_path = os.path.join(batch_dir, "ehr_batch.json")
-    with open(output_path, 'w') as f:
-        json.dump({"batch_date": date_str, "patient_count": len(patients), "patients": patients}, f, indent=2)
+    with open(output_path, "w") as f:
+        json.dump(
+            {"batch_date": date_str, "patient_count": len(patients), "patients": patients},
+            f,
+            indent=2,
+        )
 
     log.info(
         "EHR batch generated",

@@ -6,6 +6,7 @@ Delta writes against a busy table, etc. The decorator does not swallow the
 final exception: it re-raises after `max_retries` attempts so callers can
 still distinguish hard failures from intermittent ones.
 """
+
 from __future__ import annotations
 
 import functools
@@ -14,7 +15,7 @@ import sys
 import time
 from typing import Callable, Tuple, Type
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from logger import get_logger  # noqa: E402
 
 log = get_logger(__name__)
@@ -31,6 +32,7 @@ def retry(
     so the function is invoked at most ``max_retries + 1`` times. The wait
     before attempt N (0-indexed) is ``backoff_factor ** N`` seconds.
     """
+
     def decorator(func: Callable):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
@@ -41,24 +43,30 @@ def retry(
                     if attempt == max_retries:
                         log.error(
                             "Retry exhausted",
-                            extra={"extra_data": {
-                                "function": func.__name__,
-                                "max_retries": max_retries,
-                                "error": str(exc),
-                            }},
+                            extra={
+                                "extra_data": {
+                                    "function": func.__name__,
+                                    "max_retries": max_retries,
+                                    "error": str(exc),
+                                }
+                            },
                         )
                         raise
-                    wait = backoff_factor ** attempt
+                    wait = backoff_factor**attempt
                     log.warning(
                         "Retry attempt",
-                        extra={"extra_data": {
-                            "function": func.__name__,
-                            "attempt": attempt + 1,
-                            "of": max_retries,
-                            "wait_seconds": wait,
-                            "error": str(exc),
-                        }},
+                        extra={
+                            "extra_data": {
+                                "function": func.__name__,
+                                "attempt": attempt + 1,
+                                "of": max_retries,
+                                "wait_seconds": wait,
+                                "error": str(exc),
+                            }
+                        },
                     )
                     time.sleep(wait)
+
         return wrapper
+
     return decorator

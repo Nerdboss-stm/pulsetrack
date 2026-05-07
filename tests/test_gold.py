@@ -15,17 +15,18 @@ Coverage:
 Fact tables may be empty when Silver has not been populated yet.
 Those tests auto-skip with a message rather than failing.
 """
+
 import os
 import sys
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from pyspark.sql import functions as F  # noqa: E402
 
 from config import settings  # noqa: E402
-from pyspark.sql import functions as F  # noqa: E402
 from streaming.spark_config import get_spark_session  # noqa: E402
-
 
 # Legacy integration-style suite: requires the real Gold tables to already
 # exist on disk. Run after a full pipeline run; skip otherwise.
@@ -49,6 +50,7 @@ def read_gold(spark, table_name):
 
 # ── dim_date ────────────────────────────────────────────────────────────
 
+
 class TestDimDate:
 
     def test_row_count_exact(self, spark):
@@ -64,6 +66,7 @@ class TestDimDate:
 
 # ── dim_time ────────────────────────────────────────────────────────────
 
+
 class TestDimTime:
 
     def test_row_count_exact(self, spark):
@@ -78,6 +81,7 @@ class TestDimTime:
 
 
 # ── dim_condition_category ──────────────────────────────────────────────
+
 
 class TestDimConditionCategory:
 
@@ -95,6 +99,7 @@ class TestDimConditionCategory:
 
 # ── dim_condition ───────────────────────────────────────────────────────
 
+
 class TestDimCondition:
 
     def test_row_count_positive(self, spark):
@@ -109,7 +114,8 @@ class TestDimCondition:
         assert df.count() == df.select("condition_key").distinct().count()
 
     def test_fk_to_condition_category(self, spark):
-        """Snowflake FK: every condition_category_key in dim_condition must exist in dim_condition_category."""
+        """Snowflake FK: every condition_category_key in dim_condition must exist
+        in dim_condition_category."""
         conditions = read_gold(spark, "dim_condition")
         categories = read_gold(spark, "dim_condition_category")
         orphans = conditions.join(
@@ -121,6 +127,7 @@ class TestDimCondition:
 
 
 # ── dim_drug_class ──────────────────────────────────────────────────────
+
 
 class TestDimDrugClass:
 
@@ -138,6 +145,7 @@ class TestDimDrugClass:
 
 # ── dim_medication ──────────────────────────────────────────────────────
 
+
 class TestDimMedication:
 
     def test_row_count_positive(self, spark):
@@ -153,7 +161,7 @@ class TestDimMedication:
 
     def test_fk_to_drug_class(self, spark):
         """Snowflake FK: every drug_class_key in dim_medication must exist in dim_drug_class."""
-        meds        = read_gold(spark, "dim_medication")
+        meds = read_gold(spark, "dim_medication")
         drug_classes = read_gold(spark, "dim_drug_class")
         orphans = meds.join(
             drug_classes.select("drug_class_key"),
@@ -164,6 +172,7 @@ class TestDimMedication:
 
 
 # ── dim_metric ──────────────────────────────────────────────────────────
+
 
 class TestDimMetric:
 
@@ -181,6 +190,7 @@ class TestDimMetric:
 
 # ── dim_patient ─────────────────────────────────────────────────────────
 
+
 class TestDimPatient:
 
     def test_row_count_positive(self, spark):
@@ -196,6 +206,7 @@ class TestDimPatient:
 
 
 # ── fact_vital_daily_summary ────────────────────────────────────────────
+
 
 class TestFactVitalDailySummary:
 
@@ -218,8 +229,9 @@ class TestFactVitalDailySummary:
         df = read_gold(spark, "fact_vital_daily_summary")
         if df.count() == 0:
             pytest.skip("fact_vital_daily_summary is empty — Silver not yet populated")
-        assert df.filter(F.col("reading_count") <= 0).count() == 0, \
-            "All rows must have reading_count > 0"
+        assert (
+            df.filter(F.col("reading_count") <= 0).count() == 0
+        ), "All rows must have reading_count > 0"
 
     def test_avg_between_min_and_max(self, spark):
         df = read_gold(spark, "fact_vital_daily_summary")
@@ -234,10 +246,13 @@ class TestFactVitalDailySummary:
                 | (F.col("avg_value") > F.col("max_value"))
             )
         ).count()
-        assert violations == 0, f"{violations} row(s) where avg_value is outside [min_value, max_value]"
+        assert (
+            violations == 0
+        ), f"{violations} row(s) where avg_value is outside [min_value, max_value]"
 
 
 # ── fact_lab_result ─────────────────────────────────────────────────────
+
 
 class TestFactLabResult:
 
@@ -255,6 +270,6 @@ class TestFactLabResult:
         df = read_gold(spark, "fact_lab_result")
         if df.count() == 0:
             pytest.skip("fact_lab_result is empty — Silver not yet populated")
-        total    = df.count()
+        total = df.count()
         distinct = df.select("patient_key", "date_key", "lab_test_name").distinct().count()
         assert total == distinct, f"fact_lab_result has {total - distinct} duplicate grain row(s)"

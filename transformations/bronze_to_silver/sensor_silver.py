@@ -17,6 +17,7 @@ Two entrypoints:
 ``run_sensor_silver(spark)`` is preserved as a backwards-compatible wrapper
 around :func:`run_batch` for existing callers.
 """
+
 from __future__ import annotations
 
 import os
@@ -28,10 +29,12 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import IntegerType
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import settings  # noqa: E402
 from data_quality.expectations.silver_sensor_suite import (  # noqa: E402
     SUITE_NAME as SILVER_SUITE,
+)
+from data_quality.expectations.silver_sensor_suite import (
     prepare_for_validation as prepare_silver,
 )
 from data_quality.gx_config import validate as gx_validate  # noqa: E402
@@ -50,37 +53,34 @@ QUERY_NAME = "silver-sensor-readings"
 
 # Valid ranges per metric — drives the `is_valid` flag.
 METRIC_RANGES: dict[str, tuple[float, float]] = {
-    "heart_rate_bpm":     (30,   220),
-    "spo2_pct":           (70,   100),
-    "steps_since_last":   (0,    10000),
-    "skin_temp_celsius":  (30,   42),
-    "hrv_ms":             (5,    200),
-    "respiration_rate":   (8,    40),
-    "sleep_stage":        (0,    4),
-    "blood_glucose_mgdl": (40,   400),
-    "bp_systolic_mmhg":   (70,   220),
-    "bp_diastolic_mmhg":  (40,   130),
+    "heart_rate_bpm": (30, 220),
+    "spo2_pct": (70, 100),
+    "steps_since_last": (0, 10000),
+    "skin_temp_celsius": (30, 42),
+    "hrv_ms": (5, 200),
+    "respiration_rate": (8, 40),
+    "sleep_stage": (0, 4),
+    "blood_glucose_mgdl": (40, 400),
+    "bp_systolic_mmhg": (70, 220),
+    "bp_diastolic_mmhg": (40, 130),
 }
 
 
 # ── Transform pipeline ────────────────────────────────────────────────────────
 def parse_and_explode(bronze: DataFrame) -> DataFrame:
     """Project decoded Avro fields out of Bronze and explode metrics map."""
-    parsed = (
-        bronze.filter(F.col("is_parseable"))
-        .select(
-            F.col("decoded.reading_id").alias("reading_id"),
-            F.col("decoded.device_id").alias("device_id"),
-            F.col("decoded.device_type").alias("device_type"),
-            F.col("decoded.user_device_account_id").alias("device_account_id"),
-            F.col("decoded.patient_email").alias("patient_email"),
-            F.col("decoded.firmware_version").alias("firmware_version"),
-            F.col("decoded.battery_pct").cast(IntegerType()).alias("battery_pct"),
-            F.col("decoded.metrics").alias("metrics_map"),
-            F.col("decoded.event_timestamp").alias("event_timestamp"),
-            F.col("decoded.sync_timestamp").alias("sync_timestamp"),
-            F.col("ingestion_timestamp"),
-        )
+    parsed = bronze.filter(F.col("is_parseable")).select(
+        F.col("decoded.reading_id").alias("reading_id"),
+        F.col("decoded.device_id").alias("device_id"),
+        F.col("decoded.device_type").alias("device_type"),
+        F.col("decoded.user_device_account_id").alias("device_account_id"),
+        F.col("decoded.patient_email").alias("patient_email"),
+        F.col("decoded.firmware_version").alias("firmware_version"),
+        F.col("decoded.battery_pct").cast(IntegerType()).alias("battery_pct"),
+        F.col("decoded.metrics").alias("metrics_map"),
+        F.col("decoded.event_timestamp").alias("event_timestamp"),
+        F.col("decoded.sync_timestamp").alias("sync_timestamp"),
+        F.col("ingestion_timestamp"),
     )
     return parsed.select(
         F.col("reading_id"),
@@ -106,16 +106,13 @@ def add_quality_flags(df: DataFrame) -> DataFrame:
             F.col("metric_value").between(low, high),
         ).otherwise(valid_expr)
 
-    return (
-        df.withColumn(
-            "is_valid",
-            F.when(F.col("metric_value").isNull(), F.lit(False)).otherwise(valid_expr),
-        )
-        .withColumn(
-            "is_late_arriving",
-            (F.unix_timestamp("sync_timestamp") - F.unix_timestamp("event_timestamp"))
-            > settings.late_arrival_threshold_seconds,
-        )
+    return df.withColumn(
+        "is_valid",
+        F.when(F.col("metric_value").isNull(), F.lit(False)).otherwise(valid_expr),
+    ).withColumn(
+        "is_late_arriving",
+        (F.unix_timestamp("sync_timestamp") - F.unix_timestamp("event_timestamp"))
+        > settings.late_arrival_threshold_seconds,
     )
 
 
@@ -165,11 +162,13 @@ def _process_batch(spark: SparkSession, batch_df: DataFrame, batch_id: int) -> N
     cached.unpersist()
     log.info(
         "Silver batch processed",
-        extra={"extra_data": {
-            "batch_id": batch_id,
-            "valid": n_valid,
-            "quarantined": n_invalid,
-        }},
+        extra={
+            "extra_data": {
+                "batch_id": batch_id,
+                "valid": n_valid,
+                "quarantined": n_invalid,
+            }
+        },
     )
 
 
@@ -180,12 +179,14 @@ def run_streaming(metrics_port: int = 8003) -> None:
 
     log.info(
         "PulseTrack Silver sensor stream starting",
-        extra={"extra_data": {
-            "source": settings.bronze_sensor,
-            "sink": settings.silver_sensor,
-            "checkpoint": f"{settings.checkpoint_base}/silver_sensors",
-            "watermark": settings.watermark_delay,
-        }},
+        extra={
+            "extra_data": {
+                "source": settings.bronze_sensor,
+                "sink": settings.silver_sensor,
+                "checkpoint": f"{settings.checkpoint_base}/silver_sensors",
+                "watermark": settings.watermark_delay,
+            }
+        },
     )
 
     bronze = (
@@ -201,8 +202,7 @@ def run_streaming(metrics_port: int = 8003) -> None:
     )
 
     query = (
-        silver.writeStream
-        .foreachBatch(lambda df, bid: _process_batch(spark, df, bid))
+        silver.writeStream.foreachBatch(lambda df, bid: _process_batch(spark, df, bid))
         .option("checkpointLocation", f"{settings.checkpoint_base}/silver_sensors")
         .trigger(processingTime=settings.trigger_interval)
         .queryName(QUERY_NAME)
@@ -211,8 +211,7 @@ def run_streaming(metrics_port: int = 8003) -> None:
     streaming_query_active.labels(query_name=QUERY_NAME).set(1)
 
     setup_graceful_shutdown(query, spark)
-    log.info("Silver sensor stream running",
-             extra={"extra_data": {"query_id": str(query.id)}})
+    log.info("Silver sensor stream running", extra={"extra_data": {"query_id": str(query.id)}})
 
     try:
         query.awaitTermination()
@@ -226,8 +225,7 @@ def run_batch(spark: Optional[SparkSession] = None) -> None:
 
     bronze = spark.read.format("delta").load(settings.bronze_sensor)
     bronze_count = bronze.count()
-    log.info("Silver batch starting",
-             extra={"extra_data": {"bronze_rows": bronze_count}})
+    log.info("Silver batch starting", extra={"extra_data": {"bronze_rows": bronze_count}})
 
     silver = transform(bronze).dropDuplicates(["reading_id", "metric_name"])
     _process_batch(spark, silver, batch_id=-1)

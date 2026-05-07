@@ -1,11 +1,10 @@
 """fact_vital_reading: per-reading fact, schema + join logic."""
+
 from __future__ import annotations
 
 import os
 import sys
 from datetime import datetime
-
-import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -13,13 +12,26 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 def _silver_df(spark):
     return spark.createDataFrame(
         [
-            ("acct_1", "smartwatch", "heart_rate_bpm", 72.0, True, False,
-             datetime(2026, 5, 3, 14, 0)),
-            ("acct_1", "smartwatch", "spo2_pct", 97.0, True, False,
-             datetime(2026, 5, 3, 14, 0)),
+            (
+                "acct_1",
+                "smartwatch",
+                "heart_rate_bpm",
+                72.0,
+                True,
+                False,
+                datetime(2026, 5, 3, 14, 0),
+            ),
+            ("acct_1", "smartwatch", "spo2_pct", 97.0, True, False, datetime(2026, 5, 3, 14, 0)),
         ],
-        ["device_account_id", "device_type", "metric_name", "metric_value",
-         "is_valid", "is_late_arriving", "event_timestamp"],
+        [
+            "device_account_id",
+            "device_type",
+            "metric_name",
+            "metric_value",
+            "is_valid",
+            "is_late_arriving",
+            "event_timestamp",
+        ],
     )
 
 
@@ -58,13 +70,34 @@ def test_build_facts_drops_rows_with_unknown_metric(spark):
 
     silver = spark.createDataFrame(
         [
-            ("acct_1", "smartwatch", "heart_rate_bpm", 72.0, True, False,
-             datetime(2026, 5, 3, 14, 0)),
-            ("acct_1", "smartwatch", "unknown_metric", 1.0, True, False,
-             datetime(2026, 5, 3, 14, 0)),
+            (
+                "acct_1",
+                "smartwatch",
+                "heart_rate_bpm",
+                72.0,
+                True,
+                False,
+                datetime(2026, 5, 3, 14, 0),
+            ),
+            (
+                "acct_1",
+                "smartwatch",
+                "unknown_metric",
+                1.0,
+                True,
+                False,
+                datetime(2026, 5, 3, 14, 0),
+            ),
         ],
-        ["device_account_id", "device_type", "metric_name", "metric_value",
-         "is_valid", "is_late_arriving", "event_timestamp"],
+        [
+            "device_account_id",
+            "device_type",
+            "metric_name",
+            "metric_value",
+            "is_valid",
+            "is_late_arriving",
+            "event_timestamp",
+        ],
     )
     out = _build_facts(silver, _dim_metric(spark), bridge_df=None).collect()
     assert len(out) == 1  # unknown metric filtered

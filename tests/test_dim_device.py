@@ -1,4 +1,5 @@
 """dim_device SCD2: history derivation, current flagging."""
+
 from __future__ import annotations
 
 import os
@@ -19,16 +20,20 @@ def _silver_rows(rows: list[tuple[str, str, str, datetime]]):
 def test_single_firmware_version_marked_current(spark, tmp_lakehouse):
     from config import settings
 
-    rows = _silver_rows([
-        ("SW-AAA-00001", "smartwatch", "3.0.0", datetime(2026, 1, 1)),
-        ("SW-AAA-00001", "smartwatch", "3.0.0", datetime(2026, 1, 5)),
-    ])
+    rows = _silver_rows(
+        [
+            ("SW-AAA-00001", "smartwatch", "3.0.0", datetime(2026, 1, 1)),
+            ("SW-AAA-00001", "smartwatch", "3.0.0", datetime(2026, 1, 5)),
+        ]
+    )
     df = spark.createDataFrame(
-        rows, ["device_id", "device_type", "firmware_version", "event_timestamp"],
+        rows,
+        ["device_id", "device_type", "firmware_version", "event_timestamp"],
     )
     df.write.format("delta").save(settings.silver_sensor)
 
     from transformations.silver_to_gold.dim_device import main as dim_device_main
+
     dim_device_main()
 
     dim = spark.read.format("delta").load(settings.gold_dim_device)
@@ -51,7 +56,8 @@ def test_firmware_change_creates_two_scd2_rows(spark, tmp_lakehouse):
         ("SW-AAA-00001", "smartwatch", "3.1.0", datetime(2026, 3, 1)),
     ]
     df = spark.createDataFrame(
-        rows, ["device_id", "device_type", "firmware_version", "event_timestamp"],
+        rows,
+        ["device_id", "device_type", "firmware_version", "event_timestamp"],
     )
     df.write.format("delta").save(settings.silver_sensor)
 
@@ -78,7 +84,8 @@ def test_multiple_devices_independent_history(spark, tmp_lakehouse):
         ("CS-BBB-00002", "chest_strap", "2.5.0", datetime(2026, 1, 1)),
     ]
     df = spark.createDataFrame(
-        rows, ["device_id", "device_type", "firmware_version", "event_timestamp"],
+        rows,
+        ["device_id", "device_type", "firmware_version", "event_timestamp"],
     )
     df.write.format("delta").save(settings.silver_sensor)
 

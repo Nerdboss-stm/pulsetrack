@@ -13,6 +13,7 @@ Run daily during off-peak hours. For every production Delta table the job:
 Tables that don't exist yet are skipped with a single log line so the job
 can run safely against a partially-populated lakehouse.
 """
+
 from __future__ import annotations
 
 import os
@@ -22,7 +23,7 @@ from typing import Optional
 from delta.tables import DeltaTable
 from pyspark.sql import SparkSession
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import settings  # noqa: E402
 from logger import get_logger  # noqa: E402
 from streaming.spark_config import get_spark_session  # noqa: E402
@@ -42,43 +43,37 @@ TABLE_PROPERTIES: dict[str, str] = {
 # filter / join patterns in downstream queries.
 TABLES: list[dict] = [
     # Bronze (highest volume, partitioned by ingestion date)
-    {"path": settings.bronze_sensor,             "zorder_cols": ["ingestion_date"]},
-    {"path": settings.bronze_pharmacy,           "zorder_cols": ["ingestion_date"]},
-
+    {"path": settings.bronze_sensor, "zorder_cols": ["ingestion_date"]},
+    {"path": settings.bronze_pharmacy, "zorder_cols": ["ingestion_date"]},
     # Silver
-    {"path": settings.silver_sensor,             "zorder_cols": ["device_type", "metric_name"]},
-    {"path": settings.silver_ehr_conditions,     "zorder_cols": ["patient_id"]},
-    {"path": settings.silver_ehr_medications,    "zorder_cols": ["patient_id", "medication"]},
-    {"path": settings.silver_ehr_lab_results,    "zorder_cols": ["patient_id", "test_code"]},
-    {"path": settings.silver_identity_bridge,    "zorder_cols": ["identifier_type"]},
-
+    {"path": settings.silver_sensor, "zorder_cols": ["device_type", "metric_name"]},
+    {"path": settings.silver_ehr_conditions, "zorder_cols": ["patient_id"]},
+    {"path": settings.silver_ehr_medications, "zorder_cols": ["patient_id", "medication"]},
+    {"path": settings.silver_ehr_lab_results, "zorder_cols": ["patient_id", "test_code"]},
+    {"path": settings.silver_identity_bridge, "zorder_cols": ["identifier_type"]},
     # Gold facts
-    {"path": settings.gold_fact_vital_daily,     "zorder_cols": ["patient_key", "date_key"]},
-    {"path": settings.gold_fact_vital_reading,   "zorder_cols": ["patient_key", "date_key"]},
-    {"path": settings.gold_fact_lab_result,      "zorder_cols": ["patient_key", "date_key"]},
-
+    {"path": settings.gold_fact_vital_daily, "zorder_cols": ["patient_key", "date_key"]},
+    {"path": settings.gold_fact_vital_reading, "zorder_cols": ["patient_key", "date_key"]},
+    {"path": settings.gold_fact_lab_result, "zorder_cols": ["patient_key", "date_key"]},
     # Gold dimensions (small, no Z-ORDER needed)
-    {"path": settings.gold_dim_patient,            "zorder_cols": []},
-    {"path": settings.gold_dim_device,             "zorder_cols": ["device_id"]},
-    {"path": settings.gold_dim_metric,             "zorder_cols": []},
-    {"path": settings.gold_dim_date,               "zorder_cols": []},
-    {"path": settings.gold_dim_time,               "zorder_cols": []},
-    {"path": settings.gold_dim_condition,          "zorder_cols": []},
+    {"path": settings.gold_dim_patient, "zorder_cols": []},
+    {"path": settings.gold_dim_device, "zorder_cols": ["device_id"]},
+    {"path": settings.gold_dim_metric, "zorder_cols": []},
+    {"path": settings.gold_dim_date, "zorder_cols": []},
+    {"path": settings.gold_dim_time, "zorder_cols": []},
+    {"path": settings.gold_dim_condition, "zorder_cols": []},
     {"path": settings.gold_dim_condition_category, "zorder_cols": []},
-    {"path": settings.gold_dim_medication,         "zorder_cols": []},
-    {"path": settings.gold_dim_drug_class,         "zorder_cols": []},
-
+    {"path": settings.gold_dim_medication, "zorder_cols": []},
+    {"path": settings.gold_dim_drug_class, "zorder_cols": []},
     # Operational
-    {"path": settings.dlq,                         "zorder_cols": []},
-    {"path": settings.quarantine,                  "zorder_cols": []},
+    {"path": settings.dlq, "zorder_cols": []},
+    {"path": settings.quarantine, "zorder_cols": []},
 ]
 
 
 def _set_properties(spark: SparkSession, path: str) -> None:
     """Idempotent ALTER TABLE delta.`<path>` SET TBLPROPERTIES (...)."""
-    props = ",\n            ".join(
-        f"'{k}' = '{v}'" for k, v in TABLE_PROPERTIES.items()
-    )
+    props = ",\n            ".join(f"'{k}' = '{v}'" for k, v in TABLE_PROPERTIES.items())
     spark.sql(
         f"""
         ALTER TABLE delta.`{path}` SET TBLPROPERTIES (
@@ -100,8 +95,7 @@ def _maintain_table(spark: SparkSession, path: str, zorder_cols: list[str]) -> N
     try:
         _set_properties(spark, path)
     except Exception:
-        log.exception("ALTER TABLE failed",
-                      extra={"extra_data": {"path": path}})
+        log.exception("ALTER TABLE failed", extra={"extra_data": {"path": path}})
 
     dt = DeltaTable.forPath(spark, path)
 
@@ -115,46 +109,46 @@ def _maintain_table(spark: SparkSession, path: str, zorder_cols: list[str]) -> N
         else:
             dt.optimize().executeCompaction()
     except Exception:
-        log.exception("OPTIMIZE failed",
-                      extra={"extra_data": {"path": path}})
+        log.exception("OPTIMIZE failed", extra={"extra_data": {"path": path}})
 
     log.info(
         "VACUUM starting",
-        extra={"extra_data": {
-            "path": path, "retention_hours": VACUUM_RETENTION_HOURS,
-        }},
+        extra={
+            "extra_data": {
+                "path": path,
+                "retention_hours": VACUUM_RETENTION_HOURS,
+            }
+        },
     )
     try:
         dt.vacuum(retentionHours=VACUUM_RETENTION_HOURS)
     except Exception:
-        log.exception("VACUUM failed",
-                      extra={"extra_data": {"path": path}})
+        log.exception("VACUUM failed", extra={"extra_data": {"path": path}})
 
     try:
         detail = dt.detail().collect()[0]
         log.info(
             "Table stats",
-            extra={"extra_data": {
-                "path": path,
-                "num_files": detail["numFiles"],
-                "size_bytes": detail["sizeInBytes"],
-                "partition_columns": list(detail.get("partitionColumns", []) or []),
-            }},
+            extra={
+                "extra_data": {
+                    "path": path,
+                    "num_files": detail["numFiles"],
+                    "size_bytes": detail["sizeInBytes"],
+                    "partition_columns": list(detail.get("partitionColumns", []) or []),
+                }
+            },
         )
     except Exception:
-        log.exception("Detail collection failed",
-                      extra={"extra_data": {"path": path}})
+        log.exception("Detail collection failed", extra={"extra_data": {"path": path}})
 
 
 def run_compaction(spark: Optional[SparkSession] = None) -> None:
     """Run OPTIMIZE + VACUUM + property sync against every configured table."""
     spark = spark or get_spark_session("PulseTrack-Compaction")
-    log.info("Compaction run starting",
-             extra={"extra_data": {"table_count": len(TABLES)}})
+    log.info("Compaction run starting", extra={"extra_data": {"table_count": len(TABLES)}})
     for tc in TABLES:
         _maintain_table(spark, tc["path"], tc["zorder_cols"])
-    log.info("Compaction run complete",
-             extra={"extra_data": {"tables_processed": len(TABLES)}})
+    log.info("Compaction run complete", extra={"extra_data": {"tables_processed": len(TABLES)}})
 
 
 if __name__ == "__main__":
