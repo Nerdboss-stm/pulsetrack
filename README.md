@@ -9,7 +9,7 @@
 ![Storage](https://img.shields.io/badge/Storage-Delta%203.0-00ADD8)
 ![Schema](https://img.shields.io/badge/Schema-Avro%20%2B%20SR-orange)
 ![Quality](https://img.shields.io/badge/Quality-GX%201.x-purple)
-![CI](https://img.shields.io/badge/CI-GitHub%20Actions-2088FF)
+[![CI](https://github.com/Nerdboss-stm/pulsetrack/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Nerdboss-stm/pulsetrack/actions/workflows/ci.yml)
 
 ---
 
