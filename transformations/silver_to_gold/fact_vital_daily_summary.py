@@ -54,7 +54,7 @@ from metrics import (  # noqa: E402
     streaming_query_active,
 )
 from streaming.spark_config import get_spark_session  # noqa: E402
-from utils.streaming import setup_graceful_shutdown  # noqa: E402
+from utils.streaming import register_metrics_listener, setup_graceful_shutdown  # noqa: E402
 
 log = get_logger(__name__)
 QUERY_NAME = "gold-fact-vital-daily-summary"
@@ -217,6 +217,7 @@ def _make_streaming_processor(spark: SparkSession):
 def run_streaming(metrics_port: int = settings.metrics_port_gold_daily) -> None:
     start_metrics_server(metrics_port)
     spark = get_spark_session("PulseTrack-Gold-VitalDaily")
+    register_metrics_listener(spark, layer="gold")
 
     silver_stream = (
         spark.readStream.format("delta")

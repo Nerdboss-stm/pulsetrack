@@ -34,7 +34,7 @@ from metrics import (  # noqa: E402
 from schemas.registry import load_schema_str  # noqa: E402
 from streaming.dlq import DLQHandler  # noqa: E402
 from streaming.spark_config import get_spark_session  # noqa: E402
-from utils.streaming import setup_graceful_shutdown  # noqa: E402
+from utils.streaming import register_metrics_listener, setup_graceful_shutdown  # noqa: E402
 
 log = get_logger(__name__)
 SCHEMA_FILE = "pharmacy_event.avsc"
@@ -117,6 +117,7 @@ def run_pharmacy_bronze(
 ):
     start_metrics_server(metrics_port)
     spark = get_spark_session("PulseTrack-Bronze-Pharmacy")
+    register_metrics_listener(spark, layer="bronze")
     schema_str = load_schema_str(SCHEMA_FILE)
     dlq = dlq or DLQHandler(spark)
 

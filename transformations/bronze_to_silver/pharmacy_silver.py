@@ -30,7 +30,7 @@ from metrics import (  # noqa: E402
     streaming_query_active,
 )
 from streaming.spark_config import get_spark_session  # noqa: E402
-from utils.streaming import setup_graceful_shutdown  # noqa: E402
+from utils.streaming import register_metrics_listener, setup_graceful_shutdown  # noqa: E402
 
 log = get_logger(__name__)
 QUERY_NAME = "silver-pharmacy"
@@ -122,6 +122,7 @@ def _make_streaming_processor(spark: SparkSession):
 def run_streaming(metrics_port: int = settings.metrics_port_silver_pharmacy) -> None:
     start_metrics_server(metrics_port)
     spark = get_spark_session("PulseTrack-Silver-Pharmacy")
+    register_metrics_listener(spark, layer="silver")
     bronze_stream = (
         spark.readStream.format("delta")
         .option("ignoreChanges", "true")
