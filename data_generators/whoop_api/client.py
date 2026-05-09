@@ -79,21 +79,22 @@ class WhoopClient:
             if not next_token or not records:
                 break
 
-    # ── Endpoints ──────────────────────────────────────────────────────────
+    # ── Endpoints (WHOOP API v2 — cycle/recovery/sleep/workout migrated 2025+) ─
     def list_cycles(self, start: str, end: str) -> Iterator[dict]:
-        return self._paginate("/v1/cycle", start=start, end=end)
+        return self._paginate("/v2/cycle", start=start, end=end)
 
     def list_recovery(self, start: str, end: str) -> Iterator[dict]:
-        return self._paginate("/v1/recovery", start=start, end=end)
+        return self._paginate("/v2/recovery", start=start, end=end)
 
     def list_sleep(self, start: str, end: str) -> Iterator[dict]:
-        return self._paginate("/v1/activity/sleep", start=start, end=end)
+        return self._paginate("/v2/activity/sleep", start=start, end=end)
 
     def list_workouts(self, start: str, end: str) -> Iterator[dict]:
-        return self._paginate("/v1/activity/workout", start=start, end=end)
+        return self._paginate("/v2/activity/workout", start=start, end=end)
 
     @retry(max_retries=3, backoff_factor=2.0, exceptions=(requests.RequestException,))
     def get_body_measurement(self) -> dict:
+        # User profile / body measurement endpoints stayed on v1.
         url = f"{self.base_url}/v1/user/measurement/body"
         response = requests.get(url, headers=self._headers(), timeout=30)
         response.raise_for_status()

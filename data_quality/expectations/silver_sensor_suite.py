@@ -75,14 +75,16 @@ def build():
         )
     )
 
-    # event_timestamp inside watermark window (we use a generous 7d to leave
-    # room for backfills and late-sync wearables)
+    # event_timestamp inside a generous backfill window. 60 days accommodates
+    # WHOOP's 30-day API backfill plus simulator late-sync (sync_delay up to 8h)
+    # plus historical EHR-derived timestamps. Real future events still rejected.
+    # The +1h on max_value covers clock skew between producers and the validator.
     now = datetime.utcnow()
     suite.add_expectation(
         gxe.ExpectColumnValuesToBeBetween(
             column="event_timestamp",
-            min_value=now - timedelta(days=7),
-            max_value=now,
+            min_value=now - timedelta(days=60),
+            max_value=now + timedelta(hours=1),
         )
     )
 

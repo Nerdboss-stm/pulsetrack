@@ -70,20 +70,21 @@ def test_workout_maps_heart_rate(whoop_settings):
     assert event["metrics"]["heart_rate_bpm"] == 145
 
 
-def test_cycle_maps_rhr_and_hrv(whoop_settings):
+def test_cycle_maps_average_heart_rate(whoop_settings):
+    """WHOOP v2: cycle now exposes average_heart_rate (HRV/RHR moved to recovery)."""
     record = {
-        "score": {"resting_heart_rate": 60, "hrv_rmssd_milli": 55.0},
+        "score": {"average_heart_rate": 66, "max_heart_rate": 192, "strain": 16.5},
         "end": "2026-05-01T07:00:00.000Z",
     }
     event = whoop_settings.transform_cycle(record)
-    assert event["metrics"]["heart_rate_bpm"] == 60
-    assert event["metrics"]["hrv_ms"] == 55.0
+    assert event["metrics"]["heart_rate_bpm"] == 66
+    assert "hrv_ms" not in event["metrics"]
 
 
 def test_transform_records_skips_unmapped(whoop_settings):
     records = [
         {"score": {}, "created_at": "2026-05-01T07:00:00Z"},  # empty → skipped
-        {"score": {"resting_heart_rate": 50}, "end": "2026-05-01T07:00:00Z"},  # OK
+        {"score": {"average_heart_rate": 50}, "end": "2026-05-01T07:00:00Z"},  # OK
     ]
     out = list(whoop_settings.transform_records(records, "cycle"))
     assert len(out) == 1

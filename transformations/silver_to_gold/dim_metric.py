@@ -28,6 +28,8 @@ METRIC_SEED = [
     ("spo2_pct", "%", 88.0, 100.0, "sleep_ring"),
     ("skin_temp_celsius", "°C", 31.0, 37.0, "sleep_ring"),
     ("sleep_stage", "stage", 0.0, 4.0, "sleep_ring"),
+    # WHOOP sleep endpoint emits respiratory_rate from a wrist sensor (sleep_ring family).
+    ("respiration_rate", "breaths/min", 8.0, 30.0, "sleep_ring"),
     ("blood_glucose_mgdl", "mg/dL", 40.0, 400.0, "glucose_monitor"),
 ]
 

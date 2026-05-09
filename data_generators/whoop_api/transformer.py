@@ -106,16 +106,20 @@ def transform_workout(record: dict) -> dict | None:
 
 
 def transform_cycle(record: dict) -> dict | None:
-    """Map a WHOOP daily cycle to RHR + HRV summary readings."""
+    """Map a WHOOP daily cycle to a heart-rate reading.
+
+    WHOOP API v2 (2025+) moved HRV and resting HR out of cycle into recovery.
+    Cycle now exposes ``average_heart_rate`` (the day's average HR) and
+    ``max_heart_rate``. We emit average_heart_rate as a heart_rate_bpm reading;
+    HRV/RHR come from the recovery endpoint instead.
+    """
     score = record.get("score") or {}
     metrics: dict = {}
-    if score.get("resting_heart_rate") is not None:
-        metrics["heart_rate_bpm"] = score["resting_heart_rate"]
-    if score.get("hrv_rmssd_milli") is not None:
-        metrics["hrv_ms"] = score["hrv_rmssd_milli"]
+    if score.get("average_heart_rate") is not None:
+        metrics["heart_rate_bpm"] = score["average_heart_rate"]
     if not metrics:
         return None
-    event_ts = record.get("end") or record.get("created_at")
+    event_ts = record.get("end") or record.get("start") or record.get("created_at")
     if event_ts is None:
         return None
     return _build(metrics, event_ts)

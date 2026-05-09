@@ -121,6 +121,11 @@ def _build_facts(
 
 
 def _merge_facts(spark: SparkSession, facts: DataFrame) -> int:
+    # Dedupe on the MERGE grain. Multiple source events can land on the same
+    # (patient_key, metric_key, event_timestamp) — e.g., WHOOP cycle.end and
+    # recovery.created_at often coincide to the second for the same metric.
+    # Without dedupe, Delta's MERGE raises DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW_IN_MERGE.
+    facts = facts.dropDuplicates(["patient_key", "metric_key", "event_timestamp"])
     n = facts.count()
     if n == 0:
         return 0
