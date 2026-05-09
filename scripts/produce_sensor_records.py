@@ -85,23 +85,36 @@ def ensure_topic(brokers: str, topic: str) -> None:
 
 N_USERS = 50
 N_DAYS = 30
+DEVICE_TYPES = ["smartwatch", "chest_strap", "sleep_ring"]
 
 
 def make_record(seq: int, base_ts: datetime) -> dict:
-    """Synthesize one SensorReading. Wider user/day spread than the smoke
-    test so Gold (grouped by patient_key × metric × date_key) has thousands
-    of rows, matching the volume the local pipeline carries."""
+    """Synthesize one SensorReading.
+
+    device_id is per-(user, device_type) — same WHOOP-style format
+    ``WT-A01-12345`` per the bronze GX regex. With ``N_USERS=50`` and
+    3 device types this produces 150 distinct devices, so dim_device
+    has the SCD2 cardinality the resume claim implies (one row per
+    (device, firmware) version). Reusing device_id_00/01/02 across all
+    users (the prior implementation) collapsed dim_device to 3 rows.
+    """
     user_idx = seq % N_USERS
-    device_idx = seq % 3
-    device_types = ["smartwatch", "chest_strap", "sleep_ring"]
+    device_idx = seq % len(DEVICE_TYPES)
+    device_type = DEVICE_TYPES[device_idx]
+    # Per-(user, device_type) globally-unique id matching the bronze
+    # GX regex ``^[A-Z]{2}-[A-Z0-9]{3}-\d{5}$``. Letter prefix encodes
+    # device family (WT smartwatch, CS chest strap, SR sleep ring);
+    # numeric suffix encodes the user.
+    type_prefix = {"smartwatch": "WT", "chest_strap": "CS", "sleep_ring": "SR"}[device_type]
+    device_id = f"{type_prefix}-A{device_idx:02d}-{user_idx:05d}"
     # Stagger event_timestamp across N_DAYS days × 24 hours so daily
     # aggregations have meaningful grain.
     event_ts = base_ts - timedelta(hours=seq % (24 * N_DAYS))
     sync_ts = event_ts + timedelta(seconds=30)
     return {
         "reading_id": str(uuid.uuid4()),
-        "device_id": f"device_{device_idx:02d}",
-        "device_type": device_types[device_idx],
+        "device_id": device_id,
+        "device_type": device_type,
         "user_device_account_id": f"acct_{user_idx:05d}",
         "patient_email": f"user{user_idx}@example.com",
         # Metric names must match the gold/silver vocabulary in

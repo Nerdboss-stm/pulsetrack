@@ -6,7 +6,7 @@ from pyspark.sql import functions as F
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import settings  # noqa: E402
-from lakehouse.format_writer import FormatWriter, TableIdentity  # noqa: E402
+from lakehouse import make_writer_for  # noqa: E402
 from logger import get_logger  # noqa: E402
 from streaming.spark_config import get_spark_session  # noqa: E402
 
@@ -48,28 +48,11 @@ def main(fmt: str = "delta") -> None:
         F.abs(F.hash(F.concat_ws("|", F.col("metric_name"), F.col("device_type")))).cast("long"),
     ).select("metric_key", "metric_name", "unit", "normal_low", "normal_high", "device_type")
 
-    writer = FormatWriter(
-        spark=spark,
-        identity=TableIdentity(
-            path=settings.gold_dim_metric,
-            catalog=settings.iceberg_catalog,
-            database=settings.glue_db_gold,
-            table="dim_metric",
-        ),
-        fmt=fmt,
+    # Iceberg DDL is the source of truth from V001 (CREATE TABLE with
+    # sort_order metric_name); we just need to overwrite the rows here.
+    writer = make_writer_for(
+        spark, fmt, path=settings.gold_dim_metric, table_name="dim_metric", layer="gold"
     )
-
-    if fmt == "iceberg":
-        # Pure surrogate-key dim — no partitioning. Sort by metric_name for
-        # selective filter pushdown when joining facts.
-        writer.create_table(
-            schema_ddl=(
-                "metric_key BIGINT, metric_name STRING, unit STRING, "
-                "normal_low DOUBLE, normal_high DOUBLE, device_type STRING"
-            ),
-            sort_order=["metric_name"],
-        )
-
     writer.overwrite(df)
 
     log.info(

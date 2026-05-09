@@ -207,7 +207,7 @@ def run_wearable_bronze(
     spark = get_spark_session("PulseTrack-Bronze-Wearables")
     register_metrics_listener(spark, layer="bronze")
     schema_str = load_schema_str(SCHEMA_FILE)
-    dlq = dlq or DLQHandler(spark)
+    dlq = dlq or DLQHandler(spark, fmt=fmt)
 
     bronze_writer = _make_bronze_writer(spark, fmt)
 

@@ -41,6 +41,7 @@ from pyspark.sql.types import (
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import settings  # noqa: E402
+from lakehouse import make_writer_for  # noqa: E402
 from logger import get_logger  # noqa: E402
 from metrics import records_failed  # noqa: E402
 from utils.retry import retry  # noqa: E402
@@ -82,15 +83,49 @@ class DLQRecord:
 
 
 class DLQHandler:
-    """Publishes failed records to the DLQ Delta table and Kafka topic.
+    """Publishes failed records to the DLQ table and Kafka topic.
 
-    A SparkSession is required for Delta writes; pass `None` to publish to
-    Kafka only (e.g. from a non-Spark producer process).
+    The DLQ sink format follows the medallion convention: ``settings.dlq_format``
+    (``delta`` or ``iceberg``). Pass ``None`` for ``spark`` to publish to Kafka
+    only (e.g. from a non-Spark producer process).
+
+    Iceberg note: the DLQ uses append-only writes — failed records are
+    immutable evidence of what arrived and what couldn't be parsed. No MERGE
+    is needed, so Iceberg streaming consumers downstream (a hypothetical DLQ
+    reprocessor) get clean APPEND snapshots they can stream from without
+    skip-overwrite-snapshots.
     """
 
-    def __init__(self, spark: Optional[SparkSession] = None):
+    def __init__(
+        self,
+        spark: Optional[SparkSession] = None,
+        fmt: str = "delta",
+    ):
         self.spark = spark
+        self.fmt = fmt
         self._producer: Optional[Producer] = None
+        self._writer = None  # lazy, only built if Spark is available
+
+    # ── Lazy DLQ writer (format-aware) ─────────────────────────────────────
+    def _dlq_writer(self):
+        """Construct the DLQ FormatWriter on first use."""
+        if self._writer is None:
+            if self.spark is None:
+                raise RuntimeError("DLQ writer requires a SparkSession")
+            self._writer = make_writer_for(
+                self.spark,
+                self.fmt,
+                path=settings.dlq,
+                table_name="dlq",
+                # DLQ lives at the operational layer ('silver' is the closest
+                # match — it carries decoded-but-unprocessable events). Glue
+                # database resolution is via the layer arg; the actual layer
+                # for ``dlq`` is conceptually ops, but ``silver`` is the
+                # configured Glue DB so the table-level DDL can be governed
+                # by the same migration framework.
+                layer="silver",
+            )
+        return self._writer
 
     # ── Lazy Kafka producer ────────────────────────────────────────────────
     @property
@@ -132,8 +167,10 @@ class DLQHandler:
 
     @retry(max_retries=3, backoff_factor=2.0)
     def _write_delta_single(self, record: DLQRecord) -> None:
+        # Method name kept for backwards compat with existing callers; the
+        # underlying writer routes to Delta or Iceberg per ``self.fmt``.
         df = self.spark.createDataFrame([asdict(record)], schema=DLQ_SCHEMA)
-        df.write.format("delta").mode("append").save(settings.dlq)
+        self._dlq_writer().append(df)
 
     def _publish_kafka(self, record: DLQRecord) -> None:
         payload = asdict(record)
@@ -182,7 +219,7 @@ class DLQHandler:
 
         n = enriched.count()
         if n > 0:
-            enriched.write.format("delta").mode("append").save(settings.dlq)
+            self._dlq_writer().append(enriched)
             records_failed.labels(layer="bronze", source="dlq", reason=error_type).inc(n)
             log.warning(
                 "DLQ batch published",

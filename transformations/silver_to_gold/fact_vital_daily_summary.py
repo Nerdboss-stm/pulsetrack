@@ -47,7 +47,8 @@ from data_quality.expectations.gold_vitals_suite import (
     prepare_for_validation as prepare_gold,
 )
 from data_quality.gx_config import validate as gx_validate  # noqa: E402
-from lakehouse.format_writer import FormatWriter, TableIdentity  # noqa: E402
+from lakehouse import make_writer_for  # noqa: E402
+from lakehouse.format_writer import FormatWriter  # noqa: E402
 from logger import get_logger  # noqa: E402
 from metrics import (  # noqa: E402
     records_processed,
@@ -73,27 +74,22 @@ GOLD_FACT_VITAL_DAILY_DDL = (
 
 
 def _make_fact_writer(spark: SparkSession, fmt: str) -> FormatWriter:
-    """Construct the gold fact writer + ensure the Iceberg table exists."""
-    writer = FormatWriter(
-        spark=spark,
-        identity=TableIdentity(
-            path=settings.gold_fact_vital_daily,
-            catalog=settings.iceberg_catalog,
-            database=settings.glue_db_gold,
-            table="fact_vital_daily_summary",
-        ),
-        fmt=fmt,
+    """Construct the gold fact writer.
+
+    The Iceberg table DDL (partition spec, sort order, TBLPROPERTIES) is
+    the migration framework's source of truth — V001 creates this table
+    with ``PARTITIONED BY (date_key)`` and ``WRITE ORDERED BY
+    (patient_key, metric_key, date_key)``. The ``GOLD_FACT_VITAL_DAILY_DDL``
+    constant above is kept in sync as documentation but is not used for
+    auto-creation here.
+    """
+    return make_writer_for(
+        spark,
+        fmt,
+        path=settings.gold_fact_vital_daily,
+        table_name="fact_vital_daily_summary",
+        layer="gold",
     )
-    if fmt == "iceberg":
-        # date_key is the natural partition for a daily fact. Sort within
-        # each partition by patient_key so per-patient queries scan
-        # contiguously after partition pruning.
-        writer.create_table(
-            schema_ddl=GOLD_FACT_VITAL_DAILY_DDL,
-            partition_transforms=["date_key"],
-            sort_order=["patient_key", "metric_key"],
-        )
-    return writer
 
 
 def _read_silver_batch(spark: SparkSession, fmt: str) -> DataFrame:

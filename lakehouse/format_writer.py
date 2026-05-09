@@ -255,9 +255,28 @@ class FormatWriter:
             # (no migration created it), create+populate from source. Mirrors
             # Delta's "first append creates the table" behavior so callers
             # don't have to special-case the cold-start path.
+            #
+            # The catalog raises ``AnalysisException`` for missing tables in
+            # Spark 3.5; older paths and Iceberg-specific code can also raise
+            # ``NoSuchTableException``. Both bubble up through pyspark as
+            # ``AnalysisException``. Anything else (auth failure, network)
+            # should propagate — those aren't "table doesn't exist".
+            from pyspark.errors.exceptions.captured import AnalysisException
+
             try:
                 spark.read.table(self.identity.fqn).limit(0).collect()
-            except Exception:  # noqa: BLE001 — Spark's varied table-not-found exceptions
+                table_exists = True
+            except AnalysisException as exc:
+                # AnalysisException covers TABLE_OR_VIEW_NOT_FOUND and the
+                # NoSuchTableException pyspark wraps. Match on text rather
+                # than error class because the SQLSTATE varies across
+                # catalog implementations.
+                msg = str(exc).lower()
+                if "not found" in msg or "no such table" in msg or "cannot be found" in msg:
+                    table_exists = False
+                else:
+                    raise
+            if not table_exists:
                 source_df.writeTo(self.identity.fqn).using("iceberg").create()
                 return
 
