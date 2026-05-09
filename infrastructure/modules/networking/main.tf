@@ -64,7 +64,7 @@ resource "aws_vpc_endpoint" "s3" {
 
 resource "aws_security_group" "emr_master" {
   name        = "${var.name_prefix}-emr-master"
-  description = "EMR master node — SSH and Spark UI"
+  description = "EMR master node - SSH and Spark UI"
   vpc_id      = aws_vpc.main.id
 
   ingress {
@@ -104,7 +104,7 @@ resource "aws_security_group" "emr_master" {
 
 resource "aws_security_group" "emr_service" {
   name        = "${var.name_prefix}-emr-service"
-  description = "EMR service access — internal control plane"
+  description = "EMR service access - internal control plane"
   vpc_id      = aws_vpc.main.id
 
   egress {
@@ -130,7 +130,7 @@ resource "aws_security_group_rule" "emr_master_self" {
 
 resource "aws_security_group" "kafka" {
   name        = "${var.name_prefix}-kafka"
-  description = "MSK Serverless — TLS/SASL clients"
+  description = "MSK Serverless - TLS/SASL clients"
   vpc_id      = aws_vpc.main.id
 
   ingress {
