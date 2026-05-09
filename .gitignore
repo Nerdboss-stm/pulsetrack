@@ -42,3 +42,7 @@ infrastructure/*.tfplan
 .coverage.*
 htmlcov/
 coverage.xml
+
+# Producer runtime offset files
+.openfda_offset
+.whoop_poll_offsets.json
