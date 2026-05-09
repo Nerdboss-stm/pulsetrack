@@ -8,13 +8,20 @@ we derive a concatenated key column and check it with
 Per-metric physiological range checks are encoded in Silver's ``is_valid``
 flag already; the gate verifies that every row passing into Gold has
 ``is_valid = True`` (i.e. quarantine has already siphoned off the rest).
+
+Note on event_timestamp: an earlier version of this suite enforced an event
+freshness window (now ± 60 days). That was removed because (1) the gate is
+all-or-nothing per batch — one stale row dropped 58k good rows on backfills,
+(2) per-row freshness is already tracked via ``is_late_arriving`` set in
+``add_quality_flags``, and (3) historical loads (WHOOP backfill, EHR re-import)
+legitimately produce old event_timestamps. Operators monitoring stale data
+should query ``is_late_arriving`` rather than rely on a hard gate.
 """
 
 from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime, timedelta
 
 import great_expectations as gx
 import great_expectations.expectations as gxe
@@ -75,17 +82,8 @@ def build():
         )
     )
 
-    # event_timestamp inside a generous backfill window. 60 days accommodates
-    # WHOOP's 30-day API backfill plus simulator late-sync (sync_delay up to 8h)
-    # plus historical EHR-derived timestamps. Real future events still rejected.
-    # The +1h on max_value covers clock skew between producers and the validator.
-    now = datetime.utcnow()
-    suite.add_expectation(
-        gxe.ExpectColumnValuesToBeBetween(
-            column="event_timestamp",
-            min_value=now - timedelta(days=60),
-            max_value=now + timedelta(hours=1),
-        )
-    )
+    # Intentionally no event_timestamp window: per-row is_late_arriving + the
+    # streaming watermark + dropDuplicatesWithinWatermark already cover this.
+    # See module docstring for rationale.
 
     return suite
