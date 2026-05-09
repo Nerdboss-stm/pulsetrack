@@ -30,6 +30,9 @@ resource "aws_subnet" "public" {
   tags = {
     Name = "${var.name_prefix}-public-${count.index}"
     Tier = "public"
+    # Required by AmazonEMRServicePolicy_v2 — without this tag the v2
+    # service role can't configure EMR rules on the subnet.
+    "for-use-with-amazon-emr-managed-policies" = "true"
   }
 }
 
@@ -75,21 +78,10 @@ resource "aws_security_group" "emr_master" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  ingress {
-    description = "Spark UI / YARN ResourceManager"
-    from_port   = 8088
-    to_port     = 8088
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "Spark History Server"
-    from_port   = 18080
-    to_port     = 18080
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+  # EMR Block Public Access (account-level, on by default) rejects any non-SSH
+  # ingress to 0.0.0.0/0 on the master SG. Access Spark UI (8088) and History
+  # Server (18080) via SSH tunnel instead:
+  #   ssh -i pulsetrack-emr.pem -L 8088:localhost:8088 -L 18080:localhost:18080 hadoop@<master-dns>
 
   egress {
     description = "All egress"
@@ -99,7 +91,12 @@ resource "aws_security_group" "emr_master" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = { Name = "${var.name_prefix}-emr-master" }
+  tags = {
+    Name = "${var.name_prefix}-emr-master"
+    # Required by AmazonEMRServicePolicy_v2 — EMR adds inter-node rules at
+    # cluster launch and the v2 policy gates that on this tag.
+    "for-use-with-amazon-emr-managed-policies" = "true"
+  }
 }
 
 resource "aws_security_group" "emr_service" {
@@ -114,7 +111,12 @@ resource "aws_security_group" "emr_service" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = { Name = "${var.name_prefix}-emr-service" }
+  tags = {
+    Name = "${var.name_prefix}-emr-service"
+    # Required by AmazonEMRServicePolicy_v2 (kept for parity even though we
+    # don't pass this SG to a public-subnet cluster).
+    "for-use-with-amazon-emr-managed-policies" = "true"
+  }
 }
 
 # Intra-cluster traffic for EMR master/core

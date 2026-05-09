@@ -43,13 +43,71 @@ from metrics import (  # noqa: E402
     streaming_query_active,
 )
 from schemas.registry import load_schema_str  # noqa: E402
+from lakehouse.format_writer import FormatWriter, TableIdentity  # noqa: E402
 from streaming.dlq import DLQHandler  # noqa: E402
+from streaming.kafka_helpers import spark_msk_iam_options  # noqa: E402
 from streaming.spark_config import get_spark_session  # noqa: E402
 from utils.streaming import register_metrics_listener, setup_graceful_shutdown  # noqa: E402
 
 log = get_logger(__name__)
 SCHEMA_FILE = "sensor_reading.avsc"
 QUERY_NAME = "bronze-sensor-readings"
+
+# DDL for the bronze sensor_readings table — used by FormatWriter.create_table
+# when fmt=iceberg. Must stay aligned with ``_decode_envelope``'s projection.
+# The nested ``decoded`` struct mirrors the SensorReading Avro schema.
+BRONZE_SENSOR_DDL = (
+    "raw_avro_bytes BINARY, "
+    "kafka_topic STRING, "
+    "kafka_partition INT, "
+    "kafka_offset BIGINT, "
+    "kafka_timestamp TIMESTAMP, "
+    "kafka_key STRING, "
+    "ingestion_timestamp TIMESTAMP, "
+    "ingestion_date STRING, "
+    "ingestion_hour STRING, "
+    "decoded STRUCT<"
+    "reading_id: STRING, "
+    "device_id: STRING, "
+    "device_type: STRING, "
+    "user_device_account_id: STRING, "
+    "patient_email: STRING, "
+    "metrics: MAP<STRING, DOUBLE>, "
+    "firmware_version: STRING, "
+    "battery_pct: INT, "
+    "event_timestamp: TIMESTAMP, "
+    "sync_timestamp: TIMESTAMP, "
+    "source_type: STRING"
+    ">, "
+    "is_parseable BOOLEAN"
+)
+
+
+def _make_bronze_writer(spark, fmt: str) -> FormatWriter:
+    """Construct the bronze sensor writer + ensure the Iceberg table exists.
+
+    Iceberg uses hidden partitioning on ``days(ingestion_timestamp)`` rather
+    than the explicit ``ingestion_date`` / ``ingestion_hour`` columns Delta
+    partitions on — those columns are still kept in the schema for downstream
+    Silver readers that join on date-of-day.
+    """
+    writer = FormatWriter(
+        spark=spark,
+        identity=TableIdentity(
+            path=settings.bronze_sensor,
+            catalog=settings.iceberg_catalog,
+            database=settings.glue_db_bronze,
+            table="sensor_readings",
+        ),
+        fmt=fmt,
+    )
+    if fmt == "iceberg":
+        writer.create_table(
+            schema_ddl=BRONZE_SENSOR_DDL,
+            partition_transforms=["days(ingestion_timestamp)"],
+            sort_order=["kafka_offset"],
+        )
+    return writer
 
 
 def _decode_envelope(kafka_df: DataFrame, schema_str: str) -> DataFrame:
@@ -72,7 +130,7 @@ def _decode_envelope(kafka_df: DataFrame, schema_str: str) -> DataFrame:
     )
 
 
-def _make_batch_processor(dlq: DLQHandler):
+def _make_batch_processor(dlq: DLQHandler, writer: FormatWriter):
     """foreachBatch closure: write Bronze, route failures to DLQ, update metrics."""
 
     def process(batch_df: DataFrame, batch_id: int) -> None:
@@ -80,13 +138,12 @@ def _make_batch_processor(dlq: DLQHandler):
             return
         cached = batch_df.cache()
 
-        # Bronze: every record (raw bytes + envelope + decoded struct + is_parseable)
-        (
-            cached.write.format("delta")
-            .mode("append")
-            .partitionBy("ingestion_date", "ingestion_hour")
-            .option("mergeSchema", "true")
-            .save(settings.bronze_sensor)
+        # Bronze: every record (raw bytes + envelope + decoded struct + is_parseable).
+        # Iceberg uses hidden ``days(ingestion_timestamp)`` partitioning set
+        # at create_table; Delta uses the explicit columns passed here.
+        writer.append(
+            cached,
+            partition_columns=["ingestion_date", "ingestion_hour"],
         )
 
         valid = cached.filter(F.col("is_parseable")).count()
@@ -143,12 +200,21 @@ def _make_batch_processor(dlq: DLQHandler):
 def run_wearable_bronze(
     metrics_port: int = settings.metrics_port_bronze_sensor,
     dlq: Optional[DLQHandler] = None,
+    trigger_mode: str = "processing",
+    fmt: str = "delta",
 ):
     start_metrics_server(metrics_port)
     spark = get_spark_session("PulseTrack-Bronze-Wearables")
     register_metrics_listener(spark, layer="bronze")
     schema_str = load_schema_str(SCHEMA_FILE)
     dlq = dlq or DLQHandler(spark)
+
+    bronze_writer = _make_bronze_writer(spark, fmt)
+
+    # MSK IAM auth options (kafka.* prefixed) when running on cloud (SASL_SSL).
+    # Local PLAINTEXT mode returns an empty dict, so the readStream chain is
+    # identical in both modes.
+    msk_options = spark_msk_iam_options()
 
     log.info(
         "PulseTrack Wearable → Bronze ingestion starting",
@@ -157,15 +223,23 @@ def run_wearable_bronze(
                 "source_topic": settings.kafka_topic_sensor,
                 "kafka_bootstrap": settings.kafka_bootstrap,
                 "schema_registry": settings.schema_registry_url,
-                "sink": settings.bronze_sensor,
+                "sink": (
+                    bronze_writer.identity.fqn
+                    if fmt == "iceberg"
+                    else bronze_writer.identity.path
+                ),
                 "checkpoint": settings.checkpoint_bronze_sensor,
                 "max_offsets_per_trigger": settings.max_offsets_per_trigger,
+                "trigger_mode": trigger_mode,
+                "format": fmt,
+                "sasl_enabled": bool(msk_options),
             }
         },
     )
 
     kafka_df = (
         spark.readStream.format("kafka")
+        .options(**msk_options)
         .option("kafka.bootstrap.servers", settings.kafka_bootstrap)
         .option("subscribe", settings.kafka_topic_sensor)
         .option("startingOffsets", "earliest")
@@ -175,13 +249,19 @@ def run_wearable_bronze(
     )
     bronze_df = _decode_envelope(kafka_df, schema_str)
 
-    query = (
-        bronze_df.writeStream.foreachBatch(_make_batch_processor(dlq))
+    stream_writer = (
+        bronze_df.writeStream.foreachBatch(_make_batch_processor(dlq, bronze_writer))
         .option("checkpointLocation", settings.checkpoint_bronze_sensor)
-        .trigger(processingTime=settings.trigger_interval)
         .queryName(QUERY_NAME)
-        .start()
     )
+    # `available_now` processes everything currently on the topic and exits
+    # cleanly (checkpoint advances). Used for one-shot end-to-end runs.
+    # Default `processing` keeps the query alive at trigger_interval.
+    if trigger_mode == "available_now":
+        stream_writer = stream_writer.trigger(availableNow=True)
+    else:
+        stream_writer = stream_writer.trigger(processingTime=settings.trigger_interval)
+    query = stream_writer.start()
     streaming_query_active.labels(query_name=QUERY_NAME).set(1)
 
     setup_graceful_shutdown(query, spark)
@@ -195,4 +275,23 @@ def run_wearable_bronze(
 
 
 if __name__ == "__main__":
-    run_wearable_bronze()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--trigger",
+        choices=["processing", "available_now"],
+        default="processing",
+        help=(
+            "processing: long-running with processingTime trigger. "
+            "available_now: process all current offsets, advance checkpoint, exit."
+        ),
+    )
+    parser.add_argument(
+        "--format",
+        choices=["delta", "iceberg"],
+        default="delta",
+        help="Sink format. Iceberg writes to glue_iceberg.<glue_db_bronze>.sensor_readings.",
+    )
+    args = parser.parse_args()
+    run_wearable_bronze(trigger_mode=args.trigger, fmt=args.format)

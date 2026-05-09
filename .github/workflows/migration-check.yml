@@ -1,0 +1,29 @@
+name: Migration validation
+
+on: [pull_request]
+
+jobs:
+  migration-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: pip install pyspark==3.5.1 delta-spark==3.0.0
+      - name: Validate migrations
+        run: python migrations/cli.py validate
+        env:
+          LAKEHOUSE_BUCKET: pulsetrack-lakehouse-dev-03a28ee7
+          ICEBERG_CATALOG: glue_iceberg
+          GLUE_DATABASE_GOLD: pulsetrack_gold_dev
+          GLUE_DATABASE_SILVER: pulsetrack_silver_dev
+          GLUE_DATABASE_BRONZE: pulsetrack_bronze_dev
+      - name: Dry-run migrations
+        run: python migrations/cli.py dry-run
+        env:
+          LAKEHOUSE_BUCKET: pulsetrack-lakehouse-dev-03a28ee7
+          ICEBERG_CATALOG: glue_iceberg
+          GLUE_DATABASE_GOLD: pulsetrack_gold_dev
+          GLUE_DATABASE_SILVER: pulsetrack_silver_dev
+          GLUE_DATABASE_BRONZE: pulsetrack_bronze_dev

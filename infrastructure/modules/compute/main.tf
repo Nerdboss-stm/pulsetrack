@@ -46,7 +46,9 @@ resource "aws_emr_cluster" "spark" {
     key_name                          = var.key_pair_name
     emr_managed_master_security_group = var.emr_security_group_id
     emr_managed_slave_security_group  = var.emr_security_group_id
-    service_access_security_group     = var.service_security_group_id
+    # service_access_security_group is forbidden for clusters launched in a public subnet.
+    # AWS validation: "You cannot specify a ServiceAccessSecurityGroup for a cluster launched in public subnet."
+    # We run EMR in the public subnet (no NAT, no private subnet by design — keeps cost at $0/idle).
   }
 
   service_role = var.service_role_arn

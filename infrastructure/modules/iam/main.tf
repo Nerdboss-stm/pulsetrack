@@ -21,8 +21,12 @@ resource "aws_iam_role" "emr_service" {
 }
 
 resource "aws_iam_role_policy_attachment" "emr_service_role" {
-  role       = aws_iam_role.emr_service.name
-  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AmazonEMRServicePolicy_v2"
+  role = aws_iam_role.emr_service.name
+  # Legacy EMR service role policy — broader EC2 permissions, no tag-condition gating.
+  # AmazonEMRServicePolicy_v2 requires every subnet/SG/instance-profile to be tagged
+  # with `for-use-with-amazon-emr-managed-policies=true` and is finicky in practice.
+  # The legacy policy is still fully supported and is fine for a single-tenant dev cluster.
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AmazonElasticMapReduceRole"
 }
 
 # Tag-pass-through permission so EMR can launch EC2 instances on our behalf.

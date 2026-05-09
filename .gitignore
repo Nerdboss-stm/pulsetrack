@@ -46,3 +46,10 @@ coverage.xml
 # Producer runtime offset files
 .openfda_offset
 .whoop_poll_offsets.json
+
+# AWS credential dumps from IAM-user creation flow — NEVER commit
+*_accessKeys.csv
+*_credentials.csv
+
+# AWS PEM keys
+*.pem

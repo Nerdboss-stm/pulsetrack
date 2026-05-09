@@ -47,6 +47,7 @@ from data_quality.expectations.gold_vitals_suite import (
     prepare_for_validation as prepare_gold,
 )
 from data_quality.gx_config import validate as gx_validate  # noqa: E402
+from lakehouse.format_writer import FormatWriter, TableIdentity  # noqa: E402
 from logger import get_logger  # noqa: E402
 from metrics import (  # noqa: E402
     records_processed,
@@ -55,6 +56,92 @@ from metrics import (  # noqa: E402
 )
 from streaming.spark_config import get_spark_session  # noqa: E402
 from utils.streaming import register_metrics_listener, setup_graceful_shutdown  # noqa: E402
+
+# Schema for the gold fact, used by the Iceberg create_table call. Must stay
+# aligned with the projection at the bottom of ``_aggregate``.
+GOLD_FACT_VITAL_DAILY_DDL = (
+    "patient_key BIGINT, "
+    "metric_key BIGINT, "
+    "date_key INT, "
+    "avg_value DOUBLE, "
+    "min_value DOUBLE, "
+    "max_value DOUBLE, "
+    "reading_count BIGINT, "
+    "anomaly_count BIGINT, "
+    "pct_in_normal_range DOUBLE"
+)
+
+
+def _make_fact_writer(spark: SparkSession, fmt: str) -> FormatWriter:
+    """Construct the gold fact writer + ensure the Iceberg table exists."""
+    writer = FormatWriter(
+        spark=spark,
+        identity=TableIdentity(
+            path=settings.gold_fact_vital_daily,
+            catalog=settings.iceberg_catalog,
+            database=settings.glue_db_gold,
+            table="fact_vital_daily_summary",
+        ),
+        fmt=fmt,
+    )
+    if fmt == "iceberg":
+        # date_key is the natural partition for a daily fact. Sort within
+        # each partition by patient_key so per-patient queries scan
+        # contiguously after partition pruning.
+        writer.create_table(
+            schema_ddl=GOLD_FACT_VITAL_DAILY_DDL,
+            partition_transforms=["date_key"],
+            sort_order=["patient_key", "metric_key"],
+        )
+    return writer
+
+
+def _read_silver_batch(spark: SparkSession, fmt: str) -> DataFrame:
+    """Format-aware batch read of silver sensor_readings.
+
+    Iceberg mode addresses the Glue-registered table by FQN; Delta mode
+    keeps the path-based read so this transform composes with legacy
+    pipelines that haven't migrated their silver layer yet.
+    """
+    if fmt == "iceberg":
+        return spark.read.table(
+            f"{settings.iceberg_catalog}.{settings.glue_db_silver}.sensor_readings"
+        )
+    return spark.read.format("delta").load(settings.silver_sensor)
+
+
+def _read_silver_stream(spark: SparkSession, fmt: str) -> DataFrame:
+    """Format-aware streaming read of silver sensor_readings.
+
+    Iceberg note: silver's foreachBatch MERGE produces ``overwrite`` snapshots
+    (not pure appends). Iceberg's streaming source rejects those by default —
+    pass ``streaming-skip-overwrite-snapshots=true`` so this gold streaming
+    query treats MERGE-driven snapshots like append-only deltas. The trade-off
+    is that retract semantics are lost; that's fine because the gold
+    aggregation is idempotent over (patient_key, metric_key, date_key).
+    """
+    if fmt == "iceberg":
+        return (
+            spark.readStream.format("iceberg")
+            .option("streaming-skip-overwrite-snapshots", "true")
+            .load(
+                f"{settings.iceberg_catalog}.{settings.glue_db_silver}.sensor_readings"
+            )
+        )
+    return (
+        spark.readStream.format("delta")
+        .option("ignoreChanges", "true")
+        .load(settings.silver_sensor)
+    )
+
+
+def _read_dim_metric(spark: SparkSession, fmt: str) -> DataFrame:
+    """Format-aware read of dim_metric — the gold transform joins on it."""
+    if fmt == "iceberg":
+        return spark.read.table(
+            f"{settings.iceberg_catalog}.{settings.glue_db_gold}.dim_metric"
+        )
+    return spark.read.format("delta").load(settings.gold_dim_metric)
 
 log = get_logger(__name__)
 QUERY_NAME = "gold-fact-vital-daily-summary"
@@ -139,7 +226,11 @@ def _aggregate(silver_subset: DataFrame, dim_metric: DataFrame, bridge_df) -> Da
     )
 
 
-def _merge_or_seed(spark: SparkSession, aggregated: DataFrame) -> int:
+def _merge_or_seed(
+    spark: SparkSession,
+    aggregated: DataFrame,
+    writer: FormatWriter,
+) -> int:
     n = aggregated.count()
     if n == 0:
         return 0
@@ -157,22 +248,20 @@ def _merge_or_seed(spark: SparkSession, aggregated: DataFrame) -> int:
         )
         return 0
 
-    if not DeltaTable.isDeltaTable(spark, settings.gold_fact_vital_daily):
-        aggregated.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(
-            settings.gold_fact_vital_daily
-        )
-        return n
-    DeltaTable.forPath(spark, settings.gold_fact_vital_daily).alias("t").merge(
-        aggregated.alias("s"),
-        "t.patient_key = s.patient_key AND "
-        "t.metric_key  = s.metric_key  AND "
-        "t.date_key    = s.date_key",
-    ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
+    writer.merge(
+        aggregated,
+        match_condition=(
+            "t.patient_key = s.patient_key AND "
+            "t.metric_key  = s.metric_key  AND "
+            "t.date_key    = s.date_key"
+        ),
+    )
+    return n
     return n
 
 
 # ── Streaming foreachBatch ────────────────────────────────────────────────────
-def _make_streaming_processor(spark: SparkSession):
+def _make_streaming_processor(spark: SparkSession, writer: FormatWriter):
     def process(batch_df: DataFrame, batch_id: int) -> None:
         if batch_df.rdd.isEmpty():
             return
@@ -185,7 +274,7 @@ def _make_streaming_processor(spark: SparkSession):
             F.to_date("event_timestamp").alias("event_date"),
         ).distinct()
         # Re-read affected Silver slices to recompute correctly across batches
-        silver = spark.read.format("delta").load(settings.silver_sensor)
+        silver = _read_silver_batch(spark, writer.fmt)
         affected = silver.join(
             keys,
             (silver["device_account_id"] == keys["device_account_id"])
@@ -195,7 +284,10 @@ def _make_streaming_processor(spark: SparkSession):
             "inner",
         ).select(silver["*"])
 
-        dim_metric = spark.read.format("delta").load(settings.gold_dim_metric)
+        dim_metric = _read_dim_metric(spark, writer.fmt)
+        # Identity bridge is still Delta-only today — leave it format=delta
+        # for now. This is a known follow-up (V003 migration adds the silver
+        # pharmacy + identity bridge Iceberg conversion).
         bridge = (
             spark.read.format("delta").load(settings.silver_identity_bridge)
             if DeltaTable.isDeltaTable(spark, settings.silver_identity_bridge)
@@ -203,35 +295,42 @@ def _make_streaming_processor(spark: SparkSession):
         )
 
         aggregated = _aggregate(affected, dim_metric, bridge)
-        n = _merge_or_seed(spark, aggregated)
+        n = _merge_or_seed(spark, aggregated, writer)
         records_processed.labels(layer="gold", source="vital_daily").inc(n)
         cached.unpersist()
         log.info(
             "Gold daily summary batch processed",
-            extra={"extra_data": {"batch_id": batch_id, "merged_rows": n}},
+            extra={"extra_data": {"batch_id": batch_id, "merged_rows": n, "format": writer.fmt}},
         )
 
     return process
 
 
-def run_streaming(metrics_port: int = settings.metrics_port_gold_daily) -> None:
+def run_streaming(
+    metrics_port: int = settings.metrics_port_gold_daily,
+    trigger_mode: str = "processing",
+    fmt: str = "delta",
+) -> None:
     start_metrics_server(metrics_port)
     spark = get_spark_session("PulseTrack-Gold-VitalDaily")
     register_metrics_listener(spark, layer="gold")
 
-    silver_stream = (
-        spark.readStream.format("delta")
-        .option("ignoreChanges", "true")
-        .load(settings.silver_sensor)
-    )
+    fact_writer = _make_fact_writer(spark, fmt)
 
-    query = (
-        silver_stream.writeStream.foreachBatch(_make_streaming_processor(spark))
+    silver_stream = _read_silver_stream(spark, fmt)
+
+    stream_writer = (
+        silver_stream.writeStream.foreachBatch(
+            _make_streaming_processor(spark, fact_writer)
+        )
         .option("checkpointLocation", f"{settings.checkpoint_base}/gold_vital_daily")
-        .trigger(processingTime=settings.trigger_interval)
         .queryName(QUERY_NAME)
-        .start()
     )
+    if trigger_mode == "available_now":
+        stream_writer = stream_writer.trigger(availableNow=True)
+    else:
+        stream_writer = stream_writer.trigger(processingTime=settings.trigger_interval)
+    query = stream_writer.start()
     streaming_query_active.labels(query_name=QUERY_NAME).set(1)
     setup_graceful_shutdown(query, spark)
     log.info("Gold daily summary stream running", extra={"extra_data": {"query_id": str(query.id)}})
@@ -243,21 +342,26 @@ def run_streaming(metrics_port: int = settings.metrics_port_gold_daily) -> None:
 
 
 # ── Batch entrypoint (the original full recompute, kept for tests) ────────────
-def run_batch(spark: SparkSession | None = None) -> None:
+def run_batch(spark: SparkSession | None = None, fmt: str = "delta") -> None:
     spark = spark or get_spark_session("PulseTrack-Gold-VitalDaily-Batch")
 
-    if not DeltaTable.isDeltaTable(spark, settings.silver_sensor):
+    fact_writer = _make_fact_writer(spark, fmt)
+
+    # Iceberg silver-existence check is implicit in the table-name lookup;
+    # for Delta we still gate on the Delta log so an unseeded silver path
+    # produces an empty fact rather than crashing.
+    if fmt == "delta" and not DeltaTable.isDeltaTable(spark, settings.silver_sensor):
         log.warning("Silver sensor_readings not found — writing empty fact table")
         df = spark.createDataFrame([], _EMPTY_SCHEMA)
-        df.write.format("delta").mode("overwrite").save(settings.gold_fact_vital_daily)
+        fact_writer.overwrite(df)
         log.info(
             "fact_vital_daily_summary written (empty seed)",
-            extra={"extra_data": {"row_count": 0, "path": settings.gold_fact_vital_daily}},
+            extra={"extra_data": {"row_count": 0, "format": fmt}},
         )
         return
 
-    sensors = spark.read.format("delta").load(settings.silver_sensor)
-    dim_metric = spark.read.format("delta").load(settings.gold_dim_metric)
+    sensors = _read_silver_batch(spark, fmt)
+    dim_metric = _read_dim_metric(spark, fmt)
     bridge = (
         spark.read.format("delta").load(settings.silver_identity_bridge)
         if DeltaTable.isDeltaTable(spark, settings.silver_identity_bridge)
@@ -265,15 +369,18 @@ def run_batch(spark: SparkSession | None = None) -> None:
     )
 
     df = _aggregate(sensors, dim_metric, bridge)
-    df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(
-        settings.gold_fact_vital_daily
-    )
+    fact_writer.overwrite(df)
     log.info(
         "fact_vital_daily_summary written",
         extra={
             "extra_data": {
                 "row_count": df.count(),
-                "path": settings.gold_fact_vital_daily,
+                "format": fmt,
+                "target": (
+                    fact_writer.identity.fqn
+                    if fmt == "iceberg"
+                    else fact_writer.identity.path
+                ),
             }
         },
     )
@@ -289,8 +396,20 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["streaming", "batch"], default="batch")
+    parser.add_argument(
+        "--trigger",
+        choices=["processing", "available_now"],
+        default="processing",
+        help="Only used when --mode streaming. available_now exits after catching up.",
+    )
+    parser.add_argument(
+        "--format",
+        choices=["delta", "iceberg"],
+        default="delta",
+        help="Sink format. Iceberg writes to glue_iceberg.<glue_db_gold>.fact_vital_daily_summary.",
+    )
     args = parser.parse_args()
     if args.mode == "streaming":
-        run_streaming()
+        run_streaming(trigger_mode=args.trigger, fmt=args.format)
     else:
-        run_batch()
+        run_batch(fmt=args.format)

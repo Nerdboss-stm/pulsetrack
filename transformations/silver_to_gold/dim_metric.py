@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 
@@ -5,6 +6,7 @@ from pyspark.sql import functions as F
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import settings  # noqa: E402
+from lakehouse.format_writer import FormatWriter, TableIdentity  # noqa: E402
 from logger import get_logger  # noqa: E402
 from streaming.spark_config import get_spark_session  # noqa: E402
 
@@ -34,7 +36,7 @@ METRIC_SEED = [
 ]
 
 
-def main():
+def main(fmt: str = "delta") -> None:
     spark = get_spark_session("GoldDimMetric")
 
     df = spark.createDataFrame(
@@ -46,12 +48,44 @@ def main():
         F.abs(F.hash(F.concat_ws("|", F.col("metric_name"), F.col("device_type")))).cast("long"),
     ).select("metric_key", "metric_name", "unit", "normal_low", "normal_high", "device_type")
 
-    df.write.format("delta").mode("overwrite").save(settings.gold_dim_metric)
+    writer = FormatWriter(
+        spark=spark,
+        identity=TableIdentity(
+            path=settings.gold_dim_metric,
+            catalog=settings.iceberg_catalog,
+            database=settings.glue_db_gold,
+            table="dim_metric",
+        ),
+        fmt=fmt,
+    )
+
+    if fmt == "iceberg":
+        # Pure surrogate-key dim — no partitioning. Sort by metric_name for
+        # selective filter pushdown when joining facts.
+        writer.create_table(
+            schema_ddl=(
+                "metric_key BIGINT, metric_name STRING, unit STRING, "
+                "normal_low DOUBLE, normal_high DOUBLE, device_type STRING"
+            ),
+            sort_order=["metric_name"],
+        )
+
+    writer.overwrite(df)
+
     log.info(
         "dim_metric written",
-        extra={"extra_data": {"row_count": df.count(), "path": settings.gold_dim_metric}},
+        extra={
+            "extra_data": {
+                "row_count": df.count(),
+                "format": fmt,
+                "target": writer.identity.fqn if fmt == "iceberg" else writer.identity.path,
+            }
+        },
     )
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--format", choices=["delta", "iceberg"], default="delta")
+    args = parser.parse_args()
+    main(fmt=args.format)

@@ -200,6 +200,30 @@ class Settings(BaseSettings):
     def checkpoint_bronze_pharmacy(self) -> str:
         return f"{self.checkpoint_base}/bronze_pharmacy"
 
+    # ── Iceberg / Glue Catalog identifiers ──────────────────────────────
+    # The Spark catalog name set in spark_config.py's ``_apply_cloud``.
+    # Same name across environments — only the database suffix changes.
+    iceberg_catalog: str = "glue_iceberg"
+
+    # AWS deployment environment (dev/staging/prod) — distinct from
+    # ``environment`` above which is local/cloud (chooses the Spark config
+    # path). The Glue databases created by Terraform use this suffix
+    # (e.g. ``pulsetrack_bronze_dev`` from ``environment="dev"`` in
+    # ``infrastructure/terraform.tfvars``). Override with ``PT_AWS_ENV``.
+    aws_env: str = "dev"
+
+    @property
+    def glue_db_bronze(self) -> str:
+        return f"pulsetrack_bronze_{self.aws_env}"
+
+    @property
+    def glue_db_silver(self) -> str:
+        return f"pulsetrack_silver_{self.aws_env}"
+
+    @property
+    def glue_db_gold(self) -> str:
+        return f"pulsetrack_gold_{self.aws_env}"
+
     model_config = SettingsConfigDict(
         env_prefix="PT_",
         env_file=".env",

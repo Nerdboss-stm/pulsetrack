@@ -24,7 +24,6 @@ import os
 import sys
 from typing import Optional
 
-from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import IntegerType
@@ -39,6 +38,7 @@ from data_quality.expectations.silver_sensor_suite import (
 )
 from data_quality.gx_config import validate as gx_validate  # noqa: E402
 from data_quality.quarantine import quarantine_records  # noqa: E402
+from lakehouse.format_writer import FormatWriter, TableIdentity  # noqa: E402
 from logger import get_logger  # noqa: E402
 from metrics import (  # noqa: E402
     records_processed,
@@ -47,6 +47,76 @@ from metrics import (  # noqa: E402
 )
 from streaming.spark_config import get_spark_session  # noqa: E402
 from utils.streaming import register_metrics_listener, setup_graceful_shutdown  # noqa: E402
+
+# Silver sensor table — schema written once, used by Iceberg create_table.
+# Keep this in sync with the projection produced by ``transform()`` /
+# ``add_quality_flags()`` below.
+SILVER_SENSOR_DDL = (
+    "reading_id STRING, "
+    "device_id STRING, "
+    "device_type STRING, "
+    "device_account_id STRING, "
+    "patient_email STRING, "
+    "metric_name STRING, "
+    "metric_value DOUBLE, "
+    "firmware_version STRING, "
+    "battery_pct INT, "
+    "event_timestamp TIMESTAMP, "
+    "sync_timestamp TIMESTAMP, "
+    "source_type STRING, "
+    "is_valid BOOLEAN, "
+    "is_late_arriving BOOLEAN"
+)
+
+
+def _read_bronze_batch(spark: SparkSession, fmt: str) -> DataFrame:
+    """Format-aware batch read of bronze sensor_readings."""
+    if fmt == "iceberg":
+        return spark.read.table(
+            f"{settings.iceberg_catalog}.{settings.glue_db_bronze}.sensor_readings"
+        )
+    return spark.read.format("delta").load(settings.bronze_sensor)
+
+
+def _read_bronze_stream(spark: SparkSession, fmt: str) -> DataFrame:
+    """Format-aware streaming read of bronze sensor_readings."""
+    if fmt == "iceberg":
+        return spark.readStream.format("iceberg").load(
+            f"{settings.iceberg_catalog}.{settings.glue_db_bronze}.sensor_readings"
+        )
+    return (
+        spark.readStream.format("delta")
+        .option("ignoreChanges", "true")
+        .load(settings.bronze_sensor)
+    )
+
+
+def _make_silver_writer(spark: SparkSession, fmt: str) -> FormatWriter:
+    """Construct the silver sensor writer + ensure the Iceberg table exists."""
+    writer = FormatWriter(
+        spark=spark,
+        identity=TableIdentity(
+            path=settings.silver_sensor,
+            catalog=settings.iceberg_catalog,
+            database=settings.glue_db_silver,
+            table="sensor_readings",
+        ),
+        fmt=fmt,
+    )
+    if fmt == "iceberg":
+        # Hidden partitioning on event date — daily aggregations and the
+        # watermark-based dedup both filter on event_timestamp ranges.
+        # Bucket on device_account_id for parallel scan locality on
+        # per-patient queries.
+        writer.create_table(
+            schema_ddl=SILVER_SENSOR_DDL,
+            partition_transforms=[
+                "days(event_timestamp)",
+                "bucket(16, device_account_id)",
+            ],
+            sort_order=["device_account_id", "event_timestamp"],
+        )
+    return writer
 
 log = get_logger(__name__)
 QUERY_NAME = "silver-sensor-readings"
@@ -123,7 +193,12 @@ def transform(bronze: DataFrame) -> DataFrame:
 
 
 # ── Sink: foreachBatch closure shared by streaming and batch ──────────────────
-def _process_batch(spark: SparkSession, batch_df: DataFrame, batch_id: int) -> None:
+def _process_batch(
+    spark: SparkSession,
+    batch_df: DataFrame,
+    batch_id: int,
+    writer: FormatWriter,
+) -> None:
     if batch_df.rdd.isEmpty():
         log.info("Silver batch empty", extra={"extra_data": {"batch_id": batch_id}})
         return
@@ -144,13 +219,10 @@ def _process_batch(spark: SparkSession, batch_df: DataFrame, batch_id: int) -> N
             source="sensor",
         )
         if gate_pass:
-            if not DeltaTable.isDeltaTable(spark, settings.silver_sensor):
-                valid.write.format("delta").save(settings.silver_sensor)
-            else:
-                DeltaTable.forPath(spark, settings.silver_sensor).alias("t").merge(
-                    valid.alias("s"),
-                    "t.reading_id = s.reading_id AND t.metric_name = s.metric_name",
-                ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
+            writer.merge(
+                valid,
+                match_condition="t.reading_id = s.reading_id AND t.metric_name = s.metric_name",
+            )
             records_processed.labels(layer="silver", source="sensor").inc(n_valid)
         else:
             log.error(
@@ -169,34 +241,43 @@ def _process_batch(spark: SparkSession, batch_df: DataFrame, batch_id: int) -> N
                 "batch_id": batch_id,
                 "valid": n_valid,
                 "quarantined": n_invalid,
+                "format": writer.fmt,
             }
         },
     )
 
 
 # ── Streaming entrypoint ──────────────────────────────────────────────────────
-def run_streaming(metrics_port: int = settings.metrics_port_silver_sensor) -> None:
+def run_streaming(
+    metrics_port: int = settings.metrics_port_silver_sensor,
+    trigger_mode: str = "processing",
+    fmt: str = "delta",
+) -> None:
     start_metrics_server(metrics_port)
     spark = get_spark_session("PulseTrack-Silver-Sensors")
     register_metrics_listener(spark, layer="silver")
+
+    silver_writer = _make_silver_writer(spark, fmt)
 
     log.info(
         "PulseTrack Silver sensor stream starting",
         extra={
             "extra_data": {
                 "source": settings.bronze_sensor,
-                "sink": settings.silver_sensor,
+                "sink": (
+                    silver_writer.identity.fqn
+                    if fmt == "iceberg"
+                    else silver_writer.identity.path
+                ),
                 "checkpoint": f"{settings.checkpoint_base}/silver_sensors",
                 "watermark": settings.watermark_delay,
+                "trigger_mode": trigger_mode,
+                "format": fmt,
             }
         },
     )
 
-    bronze = (
-        spark.readStream.format("delta")
-        .option("ignoreChanges", "true")
-        .load(settings.bronze_sensor)
-    )
+    bronze = _read_bronze_stream(spark, fmt)
 
     silver = (
         transform(bronze)
@@ -204,13 +285,18 @@ def run_streaming(metrics_port: int = settings.metrics_port_silver_sensor) -> No
         .dropDuplicatesWithinWatermark(["reading_id", "metric_name"])
     )
 
-    query = (
-        silver.writeStream.foreachBatch(lambda df, bid: _process_batch(spark, df, bid))
+    stream_writer = (
+        silver.writeStream.foreachBatch(
+            lambda df, bid: _process_batch(spark, df, bid, silver_writer)
+        )
         .option("checkpointLocation", f"{settings.checkpoint_base}/silver_sensors")
-        .trigger(processingTime=settings.trigger_interval)
         .queryName(QUERY_NAME)
-        .start()
     )
+    if trigger_mode == "available_now":
+        stream_writer = stream_writer.trigger(availableNow=True)
+    else:
+        stream_writer = stream_writer.trigger(processingTime=settings.trigger_interval)
+    query = stream_writer.start()
     streaming_query_active.labels(query_name=QUERY_NAME).set(1)
 
     setup_graceful_shutdown(query, spark)
@@ -223,15 +309,22 @@ def run_streaming(metrics_port: int = settings.metrics_port_silver_sensor) -> No
 
 
 # ── Batch / backfill entrypoint (Kappa: same code, batch execution) ───────────
-def run_batch(spark: Optional[SparkSession] = None) -> None:
+def run_batch(
+    spark: Optional[SparkSession] = None,
+    fmt: str = "delta",
+) -> None:
     spark = spark or get_spark_session("PulseTrack-Silver-Sensors-Batch")
 
-    bronze = spark.read.format("delta").load(settings.bronze_sensor)
+    bronze = _read_bronze_batch(spark, fmt)
     bronze_count = bronze.count()
-    log.info("Silver batch starting", extra={"extra_data": {"bronze_rows": bronze_count}})
+    log.info(
+        "Silver batch starting",
+        extra={"extra_data": {"bronze_rows": bronze_count, "format": fmt}},
+    )
 
+    silver_writer = _make_silver_writer(spark, fmt)
     silver = transform(bronze).dropDuplicates(["reading_id", "metric_name"])
-    _process_batch(spark, silver, batch_id=-1)
+    _process_batch(spark, silver, batch_id=-1, writer=silver_writer)
     log.info("Silver batch complete")
 
 
@@ -246,8 +339,20 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["streaming", "batch"], default="streaming")
+    parser.add_argument(
+        "--trigger",
+        choices=["processing", "available_now"],
+        default="processing",
+        help="Only used when --mode streaming. available_now exits after catching up.",
+    )
+    parser.add_argument(
+        "--format",
+        choices=["delta", "iceberg"],
+        default="delta",
+        help="Sink format. Iceberg writes to glue_iceberg.<glue_db_silver>.sensor_readings.",
+    )
     args = parser.parse_args()
     if args.mode == "batch":
-        run_batch()
+        run_batch(fmt=args.format)
     else:
-        run_streaming()
+        run_streaming(trigger_mode=args.trigger, fmt=args.format)
