@@ -14,6 +14,7 @@ condition_key:
   Tests without a mapping get condition_key = NULL.
 """
 
+import argparse
 import os
 import sys
 
@@ -31,6 +32,7 @@ from pyspark.sql.types import (
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import settings  # noqa: E402
+from lakehouse import make_writer_for  # noqa: E402
 from logger import get_logger  # noqa: E402
 from streaming.spark_config import get_spark_session  # noqa: E402
 
@@ -58,25 +60,47 @@ _EMPTY_SCHEMA = StructType(
 )
 
 
-def main():
+def main(fmt: str = "delta") -> None:
     spark = get_spark_session("GoldFactLabResult")
 
-    if not DeltaTable.isDeltaTable(spark, settings.silver_ehr_lab_results):
+    out_writer = make_writer_for(
+        spark, fmt, path=settings.gold_fact_lab_result, table_name="fact_lab_result", layer="gold"
+    )
+    labs_writer = make_writer_for(
+        spark,
+        fmt,
+        path=settings.silver_ehr_lab_results,
+        table_name="ehr_lab_results",
+        layer="silver",
+    )
+    bridge_writer = make_writer_for(
+        spark,
+        fmt,
+        path=settings.silver_identity_bridge,
+        table_name="identity_bridge",
+        layer="silver",
+    )
+
+    labs_available = fmt == "iceberg" or DeltaTable.isDeltaTable(spark, settings.silver_ehr_lab_results)
+    if not labs_available:
         log.warning("Silver ehr_lab_results not found — writing empty fact table")
         df = spark.createDataFrame([], _EMPTY_SCHEMA)
-        df.write.format("delta").mode("overwrite").save(settings.gold_fact_lab_result)
+        out_writer.overwrite(df)
         log.info(
             "fact_lab_result written (Silver not yet populated)",
-            extra={"extra_data": {"row_count": 0, "path": settings.gold_fact_lab_result}},
+            extra={"extra_data": {"row_count": 0, "format": fmt}},
         )
         return
 
-    labs = spark.read.format("delta").load(settings.silver_ehr_lab_results)
-    dim_condition = spark.read.format("delta").load(settings.gold_dim_condition)
+    labs = labs_writer.read_batch()
+    dim_condition = make_writer_for(
+        spark, fmt, path=settings.gold_dim_condition, table_name="dim_condition", layer="gold"
+    ).read_batch()
 
     # ── Patient key via identity bridge ────────────────────────────────
-    if DeltaTable.isDeltaTable(spark, settings.silver_identity_bridge):
-        bridge = spark.read.format("delta").load(settings.silver_identity_bridge)
+    bridge_available = fmt == "iceberg" or DeltaTable.isDeltaTable(spark, settings.silver_identity_bridge)
+    if bridge_available:
+        bridge = bridge_writer.read_batch()
         mrn_to_patient = bridge.filter(F.col("identifier_type") == "hospital_mrn").select(
             F.col("identifier_value").alias("patient_id"),
             F.abs(F.hash(F.col("patient_key"))).cast("long").alias("patient_key"),
@@ -130,17 +154,15 @@ def main():
         F.col("condition_key"),
     ).dropDuplicates(["patient_key", "date_key", "lab_test_name"])
 
-    df.write.format("delta").mode("overwrite").save(settings.gold_fact_lab_result)
+    out_writer.overwrite(df)
     log.info(
         "fact_lab_result written",
-        extra={
-            "extra_data": {
-                "row_count": df.count(),
-                "path": settings.gold_fact_lab_result,
-            }
-        },
+        extra={"extra_data": {"row_count": df.count(), "format": fmt}},
     )
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--format", choices=["delta", "iceberg"], default="delta")
+    args = parser.parse_args()
+    main(fmt=args.format)

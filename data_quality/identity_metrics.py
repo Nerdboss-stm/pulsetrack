@@ -40,9 +40,24 @@ identity_avg_ids_per_patient = Gauge(
 )
 
 
-def compute_resolution_metrics(spark: SparkSession) -> dict:
-    """Compute and log identity-resolution KPIs. Returns the metrics dict."""
-    bridge = spark.read.format("delta").load(settings.silver_identity_bridge)
+def compute_resolution_metrics(spark: SparkSession, fmt: str = "delta") -> dict:
+    """Compute and log identity-resolution KPIs. Returns the metrics dict.
+
+    Format-aware so the same metrics can be computed against either the Delta
+    path-based bridge or the Iceberg Glue-catalog table.
+    """
+    if fmt == "iceberg":
+        from lakehouse import make_writer_for  # local — avoids circular at module load
+
+        bridge = make_writer_for(
+            spark,
+            fmt,
+            path=settings.silver_identity_bridge,
+            table_name="identity_bridge",
+            layer="silver",
+        ).read_batch()
+    else:
+        bridge = spark.read.format("delta").load(settings.silver_identity_bridge)
     bridge.cache()
 
     total = bridge.count()

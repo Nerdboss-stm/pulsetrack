@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 from datetime import date, timedelta
@@ -6,13 +7,14 @@ from pyspark.sql import functions as F
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import settings  # noqa: E402
+from lakehouse import make_writer_for  # noqa: E402
 from logger import get_logger  # noqa: E402
 from streaming.spark_config import get_spark_session  # noqa: E402
 
 log = get_logger(__name__)
 
 
-def main():
+def main(fmt: str = "delta") -> None:
     spark = get_spark_session("GoldDimDate")
 
     start = date(2024, 1, 1)
@@ -74,12 +76,24 @@ def main():
         .drop("date_str")
     )
 
-    df.write.format("delta").mode("overwrite").save(settings.gold_dim_date)
+    writer = make_writer_for(
+        spark, fmt, path=settings.gold_dim_date, table_name="dim_date", layer="gold"
+    )
+    writer.overwrite(df)
     log.info(
         "dim_date written",
-        extra={"extra_data": {"row_count": df.count(), "path": settings.gold_dim_date}},
+        extra={
+            "extra_data": {
+                "row_count": df.count(),
+                "format": fmt,
+                "target": writer.identity.fqn if fmt == "iceberg" else writer.identity.path,
+            }
+        },
     )
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--format", choices=["delta", "iceberg"], default="delta")
+    args = parser.parse_args()
+    main(fmt=args.format)

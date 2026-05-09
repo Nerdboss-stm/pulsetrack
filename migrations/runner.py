@@ -29,14 +29,54 @@ if TYPE_CHECKING:  # pragma: no cover
 def split_statements(sql: str) -> list[str]:
     """Split a multi-statement SQL string into individual statements.
 
-    Linear scanner that splits on ``;`` outside single-quoted string literals.
+    Linear scanner that splits on ``;`` outside single-quoted string literals
+    and outside comments. Apostrophes inside ``-- ...`` line comments and
+    ``/* ... */`` block comments would otherwise toggle the string state and
+    swallow subsequent semicolons (real bug found in V002 where a comment
+    containing "transform's" caused everything after to read as one
+    statement).
+
     Spark's ``spark.sql`` parser only accepts one statement at a time, so we
     split before dispatching.
     """
     stmts: list[str] = []
     current: list[str] = []
     in_string = False
-    for ch in sql:
+    in_line_comment = False
+    in_block_comment = False
+    i = 0
+    while i < len(sql):
+        ch = sql[i]
+        nxt = sql[i + 1] if i + 1 < len(sql) else ""
+
+        if in_line_comment:
+            current.append(ch)
+            if ch == "\n":
+                in_line_comment = False
+            i += 1
+            continue
+        if in_block_comment:
+            current.append(ch)
+            if ch == "*" and nxt == "/":
+                current.append(nxt)
+                in_block_comment = False
+                i += 2
+                continue
+            i += 1
+            continue
+        if not in_string and ch == "-" and nxt == "-":
+            in_line_comment = True
+            current.append(ch)
+            current.append(nxt)
+            i += 2
+            continue
+        if not in_string and ch == "/" and nxt == "*":
+            in_block_comment = True
+            current.append(ch)
+            current.append(nxt)
+            i += 2
+            continue
+
         if ch == "'":
             in_string = not in_string
             current.append(ch)
@@ -47,6 +87,8 @@ def split_statements(sql: str) -> list[str]:
             current = []
         else:
             current.append(ch)
+        i += 1
+
     tail = "".join(current).strip()
     if tail:
         stmts.append(tail)

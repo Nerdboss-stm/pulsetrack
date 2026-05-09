@@ -33,7 +33,10 @@ from pyspark.sql.types import (
 )
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+import argparse  # noqa: E402
+
 from config import settings  # noqa: E402
+from lakehouse import make_writer_for  # noqa: E402
 from logger import get_logger  # noqa: E402
 from streaming.spark_config import get_spark_session  # noqa: E402
 
@@ -87,7 +90,7 @@ def load_ehr_demographics(spark):
     )
 
 
-def main():
+def main(fmt: str = "delta") -> None:
     spark = get_spark_session("GoldDimPatient")
 
     demo_df = load_ehr_demographics(spark)
@@ -96,8 +99,26 @@ def main():
         extra={"extra_data": {"patient_count": demo_df.count()}},
     )
 
+    out_writer = make_writer_for(
+        spark, fmt, path=settings.gold_dim_patient, table_name="dim_patient", layer="gold"
+    )
+
     # ── Fallback: no Silver bridge yet ─────────────────────────────────
-    if not DeltaTable.isDeltaTable(spark, settings.silver_identity_bridge):
+    bridge_writer = make_writer_for(
+        spark,
+        fmt,
+        path=settings.silver_identity_bridge,
+        table_name="identity_bridge",
+        layer="silver",
+    )
+    bridge_available = (
+        # Iceberg: table is created by V001 + identity_bridge — we treat
+        # an empty table as "available" since the joins below tolerate empty
+        # bridge rows. For Delta, fall back to the original isDeltaTable check.
+        fmt == "iceberg"
+        or DeltaTable.isDeltaTable(spark, settings.silver_identity_bridge)
+    )
+    if not bridge_available:
         log.warning("Identity bridge not found — building from EHR batch files only")
         df = (
             demo_df.withColumn(
@@ -120,17 +141,15 @@ def main():
             )
             .dropDuplicates(["patient_key"])
         )
-        df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(
-            settings.gold_dim_patient
-        )
+        out_writer.overwrite(df)
         log.info(
             "dim_patient written (seeded from EHR batch files)",
-            extra={"extra_data": {"row_count": df.count(), "path": settings.gold_dim_patient}},
+            extra={"extra_data": {"row_count": df.count(), "format": fmt}},
         )
         return
 
     # ── Full build from Silver ──────────────────────────────────────────
-    bridge = spark.read.format("delta").load(settings.silver_identity_bridge)
+    bridge = bridge_writer.read_batch()
 
     mrn_rows = bridge.filter(F.col("identifier_type") == "hospital_mrn").select(
         F.col("patient_key").alias("patient_key_sha256"),
@@ -148,9 +167,16 @@ def main():
     ).withColumn("age_group", F.coalesce(F.col("age_group"), F.lit("Unknown")))
 
     # ── Primary condition (first active ICD-10 per patient) ─────────────
-    if DeltaTable.isDeltaTable(spark, settings.silver_ehr_conditions):
-        conds_silver = spark.read.format("delta").load(settings.silver_ehr_conditions)
-        dim_cond = spark.read.format("delta").load(settings.gold_dim_condition)
+    conds_writer = make_writer_for(
+        spark, fmt, path=settings.silver_ehr_conditions, table_name="ehr_conditions", layer="silver"
+    )
+    dim_cond_writer = make_writer_for(
+        spark, fmt, path=settings.gold_dim_condition, table_name="dim_condition", layer="gold"
+    )
+    conds_available = fmt == "iceberg" or DeltaTable.isDeltaTable(spark, settings.silver_ehr_conditions)
+    if conds_available:
+        conds_silver = conds_writer.read_batch()
+        dim_cond = dim_cond_writer.read_batch()
 
         cond_lookup = dim_cond.select(
             F.col("condition_key"),
@@ -174,8 +200,12 @@ def main():
         patients = patients.withColumn("primary_condition_key", F.lit(None).cast(LongType()))
 
     # ── Device count + first reading date (via bridge) ──────────────────
-    if DeltaTable.isDeltaTable(spark, settings.silver_sensor):
-        sensors = spark.read.format("delta").load(settings.silver_sensor)
+    sensor_writer = make_writer_for(
+        spark, fmt, path=settings.silver_sensor, table_name="sensor_readings", layer="silver"
+    )
+    sensors_available = fmt == "iceberg" or DeltaTable.isDeltaTable(spark, settings.silver_sensor)
+    if sensors_available:
+        sensors = sensor_writer.read_batch()
 
         device_bridge = bridge.filter(F.col("identifier_type") == "device_account_id").select(
             F.col("identifier_value").alias("device_account_id"),
@@ -213,14 +243,15 @@ def main():
         .dropDuplicates(["patient_key"])
     )
 
-    df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(
-        settings.gold_dim_patient
-    )
+    out_writer.overwrite(df)
     log.info(
         "dim_patient written",
-        extra={"extra_data": {"row_count": df.count(), "path": settings.gold_dim_patient}},
+        extra={"extra_data": {"row_count": df.count(), "format": fmt}},
     )
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--format", choices=["delta", "iceberg"], default="delta")
+    args = parser.parse_args()
+    main(fmt=args.format)

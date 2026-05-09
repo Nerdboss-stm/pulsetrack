@@ -219,6 +219,8 @@ class FormatWriter:
         insert_values: Optional[dict[str, str]] = None,
         target_alias: str = "t",
         source_alias: str = "s",
+        with_update: bool = True,
+        with_insert: bool = True,
     ) -> None:
         """MERGE INTO — upsert by ``match_condition``.
 
@@ -230,7 +232,15 @@ class FormatWriter:
                 Default: update all source columns.
             insert_values: ``{target_col: source_expr}`` for unmatched rows.
                 Default: insert all source columns.
+            with_update: include the ``WHEN MATCHED THEN UPDATE`` branch.
+                Set to ``False`` for insert-only patterns (e.g., append-only
+                fact tables that dedup by primary key).
+            with_insert: include the ``WHEN NOT MATCHED THEN INSERT`` branch.
+                Set to ``False`` for update-only patterns (e.g., SCD2
+                expire-current step that only modifies existing rows).
         """
+        if not with_update and not with_insert:
+            raise ValueError("merge() with both branches off is a no-op")
         if self.fmt == "iceberg":
             # Iceberg MERGE INTO via Spark SQL extensions.
             #
@@ -240,6 +250,17 @@ class FormatWriter:
             # session-scoped — register and query MUST run on the same
             # session, so we use ``source_df.sparkSession`` for both.
             spark = source_df.sparkSession
+
+            # First-write fallback: if the target Iceberg table doesn't exist
+            # (no migration created it), create+populate from source. Mirrors
+            # Delta's "first append creates the table" behavior so callers
+            # don't have to special-case the cold-start path.
+            try:
+                spark.read.table(self.identity.fqn).limit(0).collect()
+            except Exception:  # noqa: BLE001 — Spark's varied table-not-found exceptions
+                source_df.writeTo(self.identity.fqn).using("iceberg").create()
+                return
+
             tmp = f"_pt_merge_src_{abs(hash(self.identity.fqn)) % 10**8}"
             source_df.createOrReplaceTempView(tmp)
 
@@ -248,24 +269,26 @@ class FormatWriter:
             # is more robust than enumerating the column list because we can't
             # know in this layer whether the source has every target column
             # (e.g., when target gained a nullable column via V002).
-            if update_set:
-                update_clause = ", ".join(f"{k} = {v}" for k, v in update_set.items())
-                update_action = f"UPDATE SET {update_clause}"
-            else:
-                update_action = "UPDATE SET *"
-            if insert_values:
-                insert_cols = ", ".join(insert_values.keys())
-                insert_vals = ", ".join(insert_values.values())
-                insert_action = f"INSERT ({insert_cols}) VALUES ({insert_vals})"
-            else:
-                insert_action = "INSERT *"
+            clauses: list[str] = []
+            if with_update:
+                if update_set:
+                    update_clause = ", ".join(f"{k} = {v}" for k, v in update_set.items())
+                    clauses.append(f"WHEN MATCHED THEN UPDATE SET {update_clause}")
+                else:
+                    clauses.append("WHEN MATCHED THEN UPDATE SET *")
+            if with_insert:
+                if insert_values:
+                    insert_cols = ", ".join(insert_values.keys())
+                    insert_vals = ", ".join(insert_values.values())
+                    clauses.append(f"WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})")
+                else:
+                    clauses.append("WHEN NOT MATCHED THEN INSERT *")
 
             sql = (
                 f"MERGE INTO {self.identity.fqn} AS {target_alias} "
                 f"USING {tmp} AS {source_alias} "
                 f"ON {match_condition} "
-                f"WHEN MATCHED THEN {update_action} "
-                f"WHEN NOT MATCHED THEN {insert_action}"
+                + " ".join(clauses)
             )
             try:
                 spark.sql(sql)
@@ -287,14 +310,16 @@ class FormatWriter:
                 tgt.alias(target_alias)
                 .merge(source_df.alias(source_alias), match_condition)
             )
-            if update_set:
-                builder = builder.whenMatchedUpdate(set=update_set)
-            else:
-                builder = builder.whenMatchedUpdateAll()
-            if insert_values:
-                builder = builder.whenNotMatchedInsert(values=insert_values)
-            else:
-                builder = builder.whenNotMatchedInsertAll()
+            if with_update:
+                if update_set:
+                    builder = builder.whenMatchedUpdate(set=update_set)
+                else:
+                    builder = builder.whenMatchedUpdateAll()
+            if with_insert:
+                if insert_values:
+                    builder = builder.whenNotMatchedInsert(values=insert_values)
+                else:
+                    builder = builder.whenNotMatchedInsertAll()
             builder.execute()
 
     # ── Maintenance ────────────────────────────────────────────────────────

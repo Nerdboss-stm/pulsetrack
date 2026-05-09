@@ -15,6 +15,7 @@ deterministic and idempotent across reruns.
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 
@@ -24,18 +25,25 @@ from pyspark.sql.window import Window
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import settings  # noqa: E402
+from lakehouse import make_writer_for  # noqa: E402
 from logger import get_logger  # noqa: E402
 from streaming.spark_config import get_spark_session  # noqa: E402
 
 log = get_logger(__name__)
 
 
-def main():
+def main(fmt: str = "delta") -> None:
     spark = get_spark_session("GoldDimDevice")
 
     silver = (
-        spark.read.format("delta")
-        .load(settings.silver_sensor)
+        make_writer_for(
+            spark,
+            fmt,
+            path=settings.silver_sensor,
+            table_name="sensor_readings",
+            layer="silver",
+        )
+        .read_batch()
         .filter(F.col("device_id").isNotNull())
         .select("device_id", "device_type", "firmware_version", "event_timestamp")
     )
@@ -87,12 +95,10 @@ def main():
         F.col("last_seen").alias("last_event_at"),
     )
 
-    (
-        dim.write.format("delta")
-        .mode("overwrite")
-        .option("overwriteSchema", "true")
-        .save(settings.gold_dim_device)
+    writer = make_writer_for(
+        spark, fmt, path=settings.gold_dim_device, table_name="dim_device", layer="gold"
     )
+    writer.overwrite(dim)
 
     n = dim.count()
     n_current = dim.filter(F.col("is_current")).count()
@@ -104,11 +110,15 @@ def main():
                 "row_count": n,
                 "current_rows": n_current,
                 "distinct_devices": n_devices,
-                "path": settings.gold_dim_device,
+                "format": fmt,
+                "target": writer.identity.fqn if fmt == "iceberg" else writer.identity.path,
             }
         },
     )
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--format", choices=["delta", "iceberg"], default="delta")
+    args = parser.parse_args()
+    main(fmt=args.format)

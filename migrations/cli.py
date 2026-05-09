@@ -70,7 +70,7 @@ def _build_spark():
     builder = builder.config(
         "spark.sql.extensions",
         "io.delta.sql.DeltaSparkSessionExtension,"
-        "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtension",
+        "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
     )
     builder = builder.config(
         "spark.sql.catalog.spark_catalog",

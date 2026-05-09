@@ -1,9 +1,9 @@
+import argparse
 import glob
 import json
 import os
 import sys
 
-from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
@@ -17,6 +17,7 @@ from pyspark.sql.types import (
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import settings  # noqa: E402
+from lakehouse import make_writer_for  # noqa: E402
 from logger import get_logger  # noqa: E402
 
 log = get_logger(__name__)
@@ -242,55 +243,63 @@ def build_labs_df(spark: SparkSession, records: list[dict]) -> DataFrame:
     )
 
 
-def load_conditions(df: DataFrame, spark: SparkSession):
-    path = settings.silver_ehr_conditions
-    if not DeltaTable.isDeltaTable(spark, path):
-        df.write.format("delta").save(path)
-        log.info(
-            "ehr_conditions created",
-            extra={"extra_data": {"row_count": df.count(), "path": path}},
-        )
-        return
+def load_conditions(df: DataFrame, spark: SparkSession, fmt: str) -> None:
+    """SCD1 for conditions — status can change (active→resolved); update in place."""
+    writer = make_writer_for(
+        spark,
+        fmt,
+        path=settings.silver_ehr_conditions,
+        table_name="ehr_conditions",
+        layer="silver",
+    )
+    writer.merge(
+        df,
+        match_condition=(
+            "t.patient_id = s.patient_id AND t.icd10_code = s.icd10_code"
+        ),
+    )
+    log.info(
+        "ehr_conditions merged",
+        extra={"extra_data": {"format": fmt, "row_count": df.count()}},
+    )
 
-    # SCD1 for conditions — status can change (active→resolved), just update in place
-    DeltaTable.forPath(spark, path).alias("existing").merge(
-        df.alias("new"),
-        """existing.patient_id  = new.patient_id
-           AND existing.icd10_code = new.icd10_code""",
-    ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
-    log.info("ehr_conditions merged", extra={"extra_data": {"path": path}})
 
+def load_medications(df: DataFrame, spark: SparkSession, fmt: str) -> None:
+    """SCD2 for medications.
 
-def load_medications(df: DataFrame, spark: SparkSession):
+    Match key: patient_id + medication.
+    Change detected via row_hash (status + dosage + frequency).
+    Two-step pattern:
+      1. Update-only MERGE — expire current rows whose row_hash drifted
+         (sets effective_end and is_current=false).
+      2. Append rows that are new (left-anti join against current rows).
     """
-    SCD2 for medications.
-    Match key: patient_id + medication
-    Change detected via row_hash (status + dosage + frequency)
-    """
-    path = settings.silver_ehr_medications
+    writer = make_writer_for(
+        spark,
+        fmt,
+        path=settings.silver_ehr_medications,
+        table_name="ehr_medications",
+        layer="silver",
+    )
 
-    if not DeltaTable.isDeltaTable(spark, path):
-        df.write.format("delta").save(path)
-        log.info(
-            "ehr_medications created",
-            extra={"extra_data": {"row_count": df.count(), "path": path}},
-        )
-        return
+    # Step 1 — expire current records where hash changed (UPDATE-only).
+    writer.merge(
+        df,
+        match_condition=(
+            "t.patient_id = s.patient_id AND "
+            "t.medication = s.medication AND "
+            "t.is_current = true AND "
+            "t.row_hash != s.row_hash"
+        ),
+        update_set={
+            "effective_end": "s.effective_start",
+            "is_current": "false",
+        },
+        with_insert=False,  # this branch only expires; new versions go to step 2
+    )
 
-    # Step 1 — expire current records where hash changed
-    DeltaTable.forPath(spark, path).alias("existing").merge(
-        df.alias("new"),
-        """existing.patient_id  = new.patient_id
-           AND existing.medication  = new.medication
-           AND existing.is_current  = true
-           AND existing.row_hash   != new.row_hash""",
-    ).whenMatchedUpdate(
-        set={"effective_end": "new.effective_start", "is_current": "false"}
-    ).execute()
-
-    # Step 2 — insert new versions not already present as current
-    existing_current = spark.read.format("delta").load(path).filter(F.col("is_current"))
-
+    # Step 2 — insert new versions not already present as current.
+    existing_current = writer.read_batch().filter(F.col("is_current"))
     new_records = df.alias("new").join(
         existing_current.alias("cur"),
         on=[
@@ -300,46 +309,54 @@ def load_medications(df: DataFrame, spark: SparkSession):
         ],
         how="left_anti",
     )
-    new_records.write.format("delta").mode("append").save(path)
-    log.info("ehr_medications updated (SCD2)", extra={"extra_data": {"path": path}})
+    if new_records.count() > 0:
+        writer.append(new_records)
+    log.info(
+        "ehr_medications updated (SCD2)", extra={"extra_data": {"format": fmt}}
+    )
 
 
-def load_labs(df: DataFrame, spark: SparkSession):
-    path = settings.silver_ehr_lab_results
-    if not DeltaTable.isDeltaTable(spark, path):
-        df.write.format("delta").save(path)
-        log.info(
-            "ehr_lab_results created",
-            extra={"extra_data": {"row_count": df.count(), "path": path}},
-        )
-        return
+def load_labs(df: DataFrame, spark: SparkSession, fmt: str) -> None:
+    """Append-only — insert new observations only (no updates)."""
+    writer = make_writer_for(
+        spark,
+        fmt,
+        path=settings.silver_ehr_lab_results,
+        table_name="ehr_lab_results",
+        layer="silver",
+    )
+    writer.merge(
+        df,
+        match_condition="t.observation_id = s.observation_id",
+        with_update=False,  # never update — new observations only
+    )
+    log.info(
+        "ehr_lab_results merged",
+        extra={"extra_data": {"format": fmt, "row_count": df.count()}},
+    )
 
-    # Append-only — insert new observations only
-    DeltaTable.forPath(spark, path).alias("existing").merge(
-        df.alias("new"), "existing.observation_id = new.observation_id"
-    ).whenNotMatchedInsertAll().execute()
-    log.info("ehr_lab_results merged", extra={"extra_data": {"path": path}})
 
-
-def run_ehr_silver(spark: SparkSession):
+def run_ehr_silver(spark: SparkSession, fmt: str = "delta") -> None:
     records = load_all_batches(spark)
 
     conditions_df = build_conditions_df(spark, records)
     medications_df = build_medications_df(spark, records)
     labs_df = build_labs_df(spark, records)
 
-    log.info("Loading Silver EHR tables")
-    load_conditions(conditions_df, spark)
-    load_medications(medications_df, spark)
-    load_labs(labs_df, spark)
+    log.info("Loading Silver EHR tables", extra={"extra_data": {"format": fmt}})
+    load_conditions(conditions_df, spark, fmt)
+    load_medications(medications_df, spark, fmt)
+    load_labs(labs_df, spark, fmt)
 
     counts = {}
-    for name, path in [
-        ("ehr_conditions", settings.silver_ehr_conditions),
-        ("ehr_medications", settings.silver_ehr_medications),
-        ("ehr_lab_results", settings.silver_ehr_lab_results),
+    for name, path, table in [
+        ("ehr_conditions", settings.silver_ehr_conditions, "ehr_conditions"),
+        ("ehr_medications", settings.silver_ehr_medications, "ehr_medications"),
+        ("ehr_lab_results", settings.silver_ehr_lab_results, "ehr_lab_results"),
     ]:
-        counts[name] = spark.read.format("delta").load(path).count()
+        counts[name] = make_writer_for(
+            spark, fmt, path=path, table_name=table, layer="silver"
+        ).read_batch().count()
     log.info("EHR Silver row counts", extra={"extra_data": counts})
 
     log.info("EHR Silver complete")
@@ -348,5 +365,8 @@ def run_ehr_silver(spark: SparkSession):
 if __name__ == "__main__":
     from streaming.spark_config import get_spark_session
 
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--format", choices=["delta", "iceberg"], default="delta")
+    args = parser.parse_args()
     spark = get_spark_session("EHRSilver")
-    run_ehr_silver(spark)
+    run_ehr_silver(spark, fmt=args.format)

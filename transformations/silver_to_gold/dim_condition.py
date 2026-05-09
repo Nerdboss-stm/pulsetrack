@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 
@@ -5,6 +6,7 @@ from pyspark.sql import functions as F
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import settings  # noqa: E402
+from lakehouse import make_writer_for  # noqa: E402
 from logger import get_logger  # noqa: E402
 from streaming.spark_config import get_spark_session  # noqa: E402
 
@@ -23,10 +25,16 @@ CONDITION_SEED = [
 ]
 
 
-def main():
+def main(fmt: str = "delta") -> None:
     spark = get_spark_session("GoldDimCondition")
 
-    cats = spark.read.format("delta").load(settings.gold_dim_condition_category)
+    cats = make_writer_for(
+        spark,
+        fmt,
+        path=settings.gold_dim_condition_category,
+        table_name="dim_condition_category",
+        layer="gold",
+    ).read_batch()
 
     df = spark.createDataFrame(
         CONDITION_SEED, ["condition_code", "condition_name", "category_name"]
@@ -40,12 +48,28 @@ def main():
         .select("condition_key", "condition_code", "condition_name", "condition_category_key")
     )
 
-    df.write.format("delta").mode("overwrite").save(settings.gold_dim_condition)
+    writer = make_writer_for(
+        spark,
+        fmt,
+        path=settings.gold_dim_condition,
+        table_name="dim_condition",
+        layer="gold",
+    )
+    writer.overwrite(df)
     log.info(
         "dim_condition written",
-        extra={"extra_data": {"row_count": df.count(), "path": settings.gold_dim_condition}},
+        extra={
+            "extra_data": {
+                "row_count": df.count(),
+                "format": fmt,
+                "target": writer.identity.fqn if fmt == "iceberg" else writer.identity.path,
+            }
+        },
     )
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--format", choices=["delta", "iceberg"], default="delta")
+    args = parser.parse_args()
+    main(fmt=args.format)

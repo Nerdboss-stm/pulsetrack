@@ -36,6 +36,7 @@ from pyspark.sql.types import (
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import settings  # noqa: E402
+from lakehouse import make_writer_for  # noqa: E402
 from logger import get_logger  # noqa: E402
 from metrics import (  # noqa: E402
     records_processed,
@@ -62,7 +63,21 @@ FACT_SCHEMA = StructType(
 )
 
 
-def _seed_empty_table(spark: SparkSession) -> None:
+def _fact_writer(spark: SparkSession, fmt: str):
+    return make_writer_for(
+        spark,
+        fmt,
+        path=settings.gold_fact_vital_reading,
+        table_name="fact_vital_reading",
+        layer="gold",
+    )
+
+
+def _seed_empty_table(spark: SparkSession, fmt: str) -> None:
+    """Iceberg: V001 already created the table, nothing to do.
+    Delta: write an empty table at the path so MERGE has something to target."""
+    if fmt == "iceberg":
+        return
     if DeltaTable.isDeltaTable(spark, settings.gold_fact_vital_reading):
         return
     empty = spark.createDataFrame([], FACT_SCHEMA)
@@ -120,7 +135,7 @@ def _build_facts(
     )
 
 
-def _merge_facts(spark: SparkSession, facts: DataFrame) -> int:
+def _merge_facts(spark: SparkSession, facts: DataFrame, fmt: str) -> int:
     # Dedupe on the MERGE grain. Multiple source events can land on the same
     # (patient_key, metric_key, event_timestamp) — e.g., WHOOP cycle.end and
     # recovery.created_at often coincide to the second for the same metric.
@@ -129,65 +144,98 @@ def _merge_facts(spark: SparkSession, facts: DataFrame) -> int:
     n = facts.count()
     if n == 0:
         return 0
-    DeltaTable.forPath(spark, settings.gold_fact_vital_reading).alias("t").merge(
-        facts.alias("s"),
-        "t.patient_key = s.patient_key AND "
-        "t.metric_key  = s.metric_key  AND "
-        "t.event_timestamp = s.event_timestamp",
-    ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
+    _fact_writer(spark, fmt).merge(
+        facts,
+        match_condition=(
+            "t.patient_key = s.patient_key AND "
+            "t.metric_key  = s.metric_key  AND "
+            "t.event_timestamp = s.event_timestamp"
+        ),
+    )
     return n
 
 
-def _make_processor(spark: SparkSession):
+def _make_processor(spark: SparkSession, fmt: str):
     def process(batch_df: DataFrame, batch_id: int) -> None:
         if batch_df.rdd.isEmpty():
             return
-        dim_metric = spark.read.format("delta").load(settings.gold_dim_metric)
+        dim_metric = make_writer_for(
+            spark, fmt, path=settings.gold_dim_metric, table_name="dim_metric", layer="gold"
+        ).read_batch()
+        bridge_writer = make_writer_for(
+            spark,
+            fmt,
+            path=settings.silver_identity_bridge,
+            table_name="identity_bridge",
+            layer="silver",
+        )
         bridge = (
-            spark.read.format("delta").load(settings.silver_identity_bridge)
-            if DeltaTable.isDeltaTable(spark, settings.silver_identity_bridge)
+            bridge_writer.read_batch()
+            if fmt == "iceberg" or DeltaTable.isDeltaTable(spark, settings.silver_identity_bridge)
             else None
         )
         facts = _build_facts(batch_df, dim_metric, bridge)
-        n = _merge_facts(spark, facts)
+        n = _merge_facts(spark, facts, fmt)
         records_processed.labels(layer="gold", source="vital_reading").inc(n)
         log.info(
             "Gold vital_reading batch processed",
-            extra={"extra_data": {"batch_id": batch_id, "merged_rows": n}},
+            extra={"extra_data": {"batch_id": batch_id, "merged_rows": n, "format": fmt}},
         )
 
     return process
 
 
-def run_streaming(metrics_port: int = settings.metrics_port_gold_reading) -> None:
+def run_streaming(
+    metrics_port: int = settings.metrics_port_gold_reading,
+    trigger_mode: str = "processing",
+    fmt: str = "delta",
+) -> None:
     start_metrics_server(metrics_port)
     spark = get_spark_session("PulseTrack-Gold-VitalReading")
     register_metrics_listener(spark, layer="gold")
-    _seed_empty_table(spark)
+    _seed_empty_table(spark, fmt)
 
     log.info(
         "Gold fact_vital_reading stream starting",
         extra={
             "extra_data": {
                 "source": settings.silver_sensor,
-                "sink": settings.gold_fact_vital_reading,
+                "sink": (
+                    f"{settings.iceberg_catalog}.{settings.glue_db_gold}.fact_vital_reading"
+                    if fmt == "iceberg"
+                    else settings.gold_fact_vital_reading
+                ),
+                "format": fmt,
+                "trigger_mode": trigger_mode,
             }
         },
     )
 
-    silver_stream = (
-        spark.readStream.format("delta")
-        .option("ignoreChanges", "true")
-        .load(settings.silver_sensor)
-    )
+    if fmt == "iceberg":
+        silver_stream = (
+            spark.readStream.format("iceberg")
+            .option("streaming-skip-overwrite-snapshots", "true")
+            .load(
+                f"{settings.iceberg_catalog}.{settings.glue_db_silver}.sensor_readings"
+            )
+        )
+    else:
+        silver_stream = (
+            spark.readStream.format("delta")
+            .option("ignoreChanges", "true")
+            .load(settings.silver_sensor)
+        )
 
-    query = (
-        silver_stream.writeStream.foreachBatch(_make_processor(spark))
+    stream_writer = (
+        silver_stream.writeStream.foreachBatch(_make_processor(spark, fmt))
         .option("checkpointLocation", f"{settings.checkpoint_base}/gold_vital_reading")
-        .trigger(processingTime=settings.trigger_interval)
         .queryName(QUERY_NAME)
-        .start()
     )
+    if trigger_mode == "available_now":
+        stream_writer = stream_writer.trigger(availableNow=True)
+    else:
+        stream_writer = stream_writer.trigger(processingTime=settings.trigger_interval)
+    query = stream_writer.start()
     streaming_query_active.labels(query_name=QUERY_NAME).set(1)
     setup_graceful_shutdown(query, spark)
 
@@ -197,31 +245,37 @@ def run_streaming(metrics_port: int = settings.metrics_port_gold_reading) -> Non
         streaming_query_active.labels(query_name=QUERY_NAME).set(0)
 
 
-def run_batch(spark: SparkSession | None = None) -> None:
+def run_batch(spark: SparkSession | None = None, fmt: str = "delta") -> None:
     spark = spark or get_spark_session("PulseTrack-Gold-VitalReading-Batch")
-    _seed_empty_table(spark)
+    _seed_empty_table(spark, fmt)
 
-    if not DeltaTable.isDeltaTable(spark, settings.silver_sensor):
+    if fmt == "delta" and not DeltaTable.isDeltaTable(spark, settings.silver_sensor):
         log.warning("Silver sensor_readings not found — fact_vital_reading remains empty")
         return
 
-    silver = spark.read.format("delta").load(settings.silver_sensor)
-    dim_metric = spark.read.format("delta").load(settings.gold_dim_metric)
+    silver = make_writer_for(
+        spark, fmt, path=settings.silver_sensor, table_name="sensor_readings", layer="silver"
+    ).read_batch()
+    dim_metric = make_writer_for(
+        spark, fmt, path=settings.gold_dim_metric, table_name="dim_metric", layer="gold"
+    ).read_batch()
+    bridge_writer = make_writer_for(
+        spark,
+        fmt,
+        path=settings.silver_identity_bridge,
+        table_name="identity_bridge",
+        layer="silver",
+    )
     bridge = (
-        spark.read.format("delta").load(settings.silver_identity_bridge)
-        if DeltaTable.isDeltaTable(spark, settings.silver_identity_bridge)
+        bridge_writer.read_batch()
+        if fmt == "iceberg" or DeltaTable.isDeltaTable(spark, settings.silver_identity_bridge)
         else None
     )
     facts = _build_facts(silver, dim_metric, bridge)
-    n = _merge_facts(spark, facts)
+    n = _merge_facts(spark, facts, fmt)
     log.info(
         "fact_vital_reading written",
-        extra={
-            "extra_data": {
-                "row_count": n,
-                "path": settings.gold_fact_vital_reading,
-            }
-        },
+        extra={"extra_data": {"row_count": n, "format": fmt}},
     )
 
 
@@ -234,8 +288,15 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["streaming", "batch"], default="batch")
+    parser.add_argument(
+        "--trigger",
+        choices=["processing", "available_now"],
+        default="processing",
+        help="Streaming trigger mode (only used with --mode streaming).",
+    )
+    parser.add_argument("--format", choices=["delta", "iceberg"], default="delta")
     args = parser.parse_args()
     if args.mode == "streaming":
-        run_streaming()
+        run_streaming(trigger_mode=args.trigger, fmt=args.format)
     else:
-        run_batch()
+        run_batch(fmt=args.format)

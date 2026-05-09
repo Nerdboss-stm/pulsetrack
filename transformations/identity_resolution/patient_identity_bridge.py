@@ -21,6 +21,7 @@ Phases (executed in order so each phase can read what the previous one wrote):
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from typing import Optional
@@ -33,24 +34,65 @@ from pyspark.sql.types import StringType
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import settings  # noqa: E402
 from data_quality.identity_metrics import compute_resolution_metrics  # noqa: E402
+from lakehouse import make_writer_for  # noqa: E402
 from logger import get_logger  # noqa: E402
 
 log = get_logger(__name__)
 
 
+def _bridge_writer(spark: SparkSession, fmt: str):
+    return make_writer_for(
+        spark,
+        fmt,
+        path=settings.silver_identity_bridge,
+        table_name="identity_bridge",
+        layer="silver",
+    )
+
+
+def _silver_ehr_conditions(spark: SparkSession, fmt: str):
+    return make_writer_for(
+        spark,
+        fmt,
+        path=settings.silver_ehr_conditions,
+        table_name="ehr_conditions",
+        layer="silver",
+    )
+
+
+def _silver_ehr_medications(spark: SparkSession, fmt: str):
+    return make_writer_for(
+        spark,
+        fmt,
+        path=settings.silver_ehr_medications,
+        table_name="ehr_medications",
+        layer="silver",
+    )
+
+
+def _silver_sensor(spark: SparkSession, fmt: str):
+    return make_writer_for(
+        spark,
+        fmt,
+        path=settings.silver_sensor,
+        table_name="sensor_readings",
+        layer="silver",
+    )
+
+
 # ── Phase 1: EHR identities ─────────────────────────────────────────────────
-def build_ehr_identities(spark: SparkSession) -> DataFrame:
+def build_ehr_identities(spark: SparkSession, fmt: str) -> DataFrame:
     """Union (patient_id, patient_email) from EHR conditions + medications."""
     conditions = (
-        spark.read.format("delta")
-        .load(settings.silver_ehr_conditions)
+        _silver_ehr_conditions(spark, fmt)
+        .read_batch()
         .select("patient_id", "patient_email")
         .filter(F.col("patient_id").isNotNull())
     )
 
     medications = (
-        spark.read.format("delta")
-        .load(settings.silver_ehr_medications)
+        _silver_ehr_medications(spark, fmt)
+        .read_batch()
         .select("patient_id", "patient_email")
         .filter(F.col("patient_id").isNotNull())
     )
@@ -87,7 +129,7 @@ def build_ehr_bridge_rows(ehr_df: DataFrame) -> DataFrame:
 
 
 # ── Phase 2: Device identities (transitive via email) ───────────────────────
-def build_device_bridge_rows(spark: SparkSession) -> DataFrame:
+def build_device_bridge_rows(spark: SparkSession, fmt: str) -> DataFrame:
     """
     Device accounts now carry patient_email (set by the wearable producer).
     Look up email in the EHR bridge rows already in the bridge to find
@@ -97,16 +139,16 @@ def build_device_bridge_rows(spark: SparkSession) -> DataFrame:
     Must be called AFTER the EHR bridge rows have been written.
     """
     devices = (
-        spark.read.format("delta")
-        .load(settings.silver_sensor)
+        _silver_sensor(spark, fmt)
+        .read_batch()
         .select("device_account_id", "patient_email")
         .filter(F.col("device_account_id").isNotNull())
         .distinct()
     )
 
     ehr_emails = (
-        spark.read.format("delta")
-        .load(settings.silver_identity_bridge)
+        _bridge_writer(spark, fmt)
+        .read_batch()
         .filter(F.col("identifier_type") == "email")
         .select(
             F.col("identifier_value").alias("patient_email"),
@@ -177,32 +219,25 @@ def build_pharmacy_bridge_rows(spark: SparkSession) -> Optional[DataFrame]:
 
 
 # ── Bridge sink ─────────────────────────────────────────────────────────────
-def load_bridge(bridge_df: DataFrame, spark: SparkSession):
+def load_bridge(bridge_df: DataFrame, spark: SparkSession, fmt: str) -> None:
     bridge_df = bridge_df.withColumn("first_seen", F.current_timestamp()).withColumn(
         "last_seen", F.current_timestamp()
     )
 
-    if not DeltaTable.isDeltaTable(spark, settings.silver_identity_bridge):
-        bridge_df.write.format("delta").save(settings.silver_identity_bridge)
-        log.info(
-            "patient_identity_bridge created",
-            extra={"extra_data": {"row_count": bridge_df.count()}},
-        )
-        return
-
-    DeltaTable.forPath(spark, settings.silver_identity_bridge).alias("bridge").merge(
-        bridge_df.alias("new"),
-        """bridge.identifier_type  = new.identifier_type
-           AND bridge.identifier_value = new.identifier_value""",
-    ).whenMatchedUpdate(
-        set={
-            "last_seen": "new.last_seen",
-            "link_status": "new.link_status",
-            "patient_key": "new.patient_key",
-            "match_method": "new.match_method",
-        }
-    ).whenNotMatchedInsertAll().execute()
-    log.info("patient_identity_bridge merged")
+    _bridge_writer(spark, fmt).merge(
+        bridge_df,
+        match_condition=(
+            "t.identifier_type = s.identifier_type AND "
+            "t.identifier_value = s.identifier_value"
+        ),
+        update_set={
+            "last_seen": "s.last_seen",
+            "link_status": "s.link_status",
+            "patient_key": "s.patient_key",
+            "match_method": "s.match_method",
+        },
+    )
+    log.info("patient_identity_bridge merged", extra={"extra_data": {"format": fmt}})
 
 
 # ── Phase 0: Seed the user's WHOOP identity (when configured) ───────────────
@@ -240,32 +275,32 @@ def build_whoop_user_seed(spark: SparkSession) -> Optional[DataFrame]:
 
 
 # ── Orchestration ───────────────────────────────────────────────────────────
-def run_identity_bridge(spark: SparkSession):
+def run_identity_bridge(spark: SparkSession, fmt: str = "delta") -> None:
     # Phase 0: Seed the operator's own WHOOP identity (if configured).
     whoop_seed = build_whoop_user_seed(spark)
     if whoop_seed is not None:
         log.info("Phase 0: Seeding operator WHOOP identity")
-        load_bridge(whoop_seed, spark)
+        load_bridge(whoop_seed, spark, fmt)
 
     # Phase 1: EHR rows must land first so phase 2 can read them.
     log.info("Phase 1: Building EHR identities")
-    ehr_df = build_ehr_identities(spark)
+    ehr_df = build_ehr_identities(spark, fmt)
     log.info("Unique EHR patients", extra={"extra_data": {"count": ehr_df.count()}})
-    load_bridge(build_ehr_bridge_rows(ehr_df), spark)
+    load_bridge(build_ehr_bridge_rows(ehr_df), spark, fmt)
 
     # Phase 2: Devices look up email → patient_key in the bridge.
     log.info("Phase 2: Building device identities (transitive email link)")
-    load_bridge(build_device_bridge_rows(spark), spark)
+    load_bridge(build_device_bridge_rows(spark, fmt), spark, fmt)
 
     # Phase 3: FDA report IDs (if a pharmacy Bronze table exists).
     log.info("Phase 3: Building pharmacy / FDA identifiers")
     pharmacy_bridge = build_pharmacy_bridge_rows(spark)
     if pharmacy_bridge is not None:
-        load_bridge(pharmacy_bridge, spark)
+        load_bridge(pharmacy_bridge, spark, fmt)
 
     # Phase 4: Resolution KPIs.
     log.info("Phase 4: Computing identity resolution metrics")
-    compute_resolution_metrics(spark)
+    compute_resolution_metrics(spark, fmt=fmt)
 
     log.info("Identity bridge complete")
 
@@ -273,5 +308,8 @@ def run_identity_bridge(spark: SparkSession):
 if __name__ == "__main__":
     from streaming.spark_config import get_spark_session
 
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--format", choices=["delta", "iceberg"], default="delta")
+    args = parser.parse_args()
     sess = get_spark_session("PatientIdentityBridge")
-    run_identity_bridge(sess)
+    run_identity_bridge(sess, fmt=args.format)

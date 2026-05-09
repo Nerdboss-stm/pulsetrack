@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 
@@ -5,6 +6,7 @@ from pyspark.sql import functions as F
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import settings  # noqa: E402
+from lakehouse import make_writer_for  # noqa: E402
 from logger import get_logger  # noqa: E402
 from streaming.spark_config import get_spark_session  # noqa: E402
 
@@ -22,10 +24,16 @@ MEDICATION_SEED = [
 ]
 
 
-def main():
+def main(fmt: str = "delta") -> None:
     spark = get_spark_session("GoldDimMedication")
 
-    drug_classes = spark.read.format("delta").load(settings.gold_dim_drug_class)
+    drug_classes = make_writer_for(
+        spark,
+        fmt,
+        path=settings.gold_dim_drug_class,
+        table_name="dim_drug_class",
+        layer="gold",
+    ).read_batch()
 
     df = spark.createDataFrame(MEDICATION_SEED, ["medication_name", "generic_name", "class_name"])
 
@@ -35,17 +43,28 @@ def main():
         .select("medication_key", "medication_name", "generic_name", "drug_class_key")
     )
 
-    df.write.format("delta").mode("overwrite").save(settings.gold_dim_medication)
+    writer = make_writer_for(
+        spark,
+        fmt,
+        path=settings.gold_dim_medication,
+        table_name="dim_medication",
+        layer="gold",
+    )
+    writer.overwrite(df)
     log.info(
         "dim_medication written",
         extra={
             "extra_data": {
                 "row_count": df.count(),
-                "path": settings.gold_dim_medication,
+                "format": fmt,
+                "target": writer.identity.fqn if fmt == "iceberg" else writer.identity.path,
             }
         },
     )
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--format", choices=["delta", "iceberg"], default="delta")
+    args = parser.parse_args()
+    main(fmt=args.format)
