@@ -1,0 +1,21 @@
+category_key,category_code,category_name,icd10_chapter,description
+1,A00-B99,Infectious and parasitic diseases,1,Bacterial viral fungal and parasitic infections
+2,C00-D49,Neoplasms,2,Tumors both benign and malignant
+3,D50-D89,Blood disorders,3,Anemia coagulation disorders immune disorders
+4,E00-E89,Endocrine and metabolic,4,Diabetes thyroid pituitary metabolic
+5,F00-F99,Mental and behavioral,5,Depression anxiety substance use disorders
+6,G00-G99,Nervous system,6,Migraine epilepsy multiple sclerosis stroke neurological
+7,H00-H59,Eye and adnexa,7,Vision disorders glaucoma cataract
+8,H60-H95,Ear and mastoid,8,Hearing disorders vertigo
+9,I00-I99,Circulatory system,9,Heart disease hypertension stroke cardiovascular
+10,J00-J99,Respiratory system,10,Asthma COPD pneumonia respiratory
+11,K00-K95,Digestive system,11,GI disorders liver gallbladder digestive
+12,L00-L99,Skin and subcutaneous,12,Dermatitis psoriasis skin conditions
+13,M00-M99,Musculoskeletal,13,Arthritis back pain osteoporosis
+14,N00-N99,Genitourinary,14,Kidney urinary tract reproductive
+15,O00-O9A,Pregnancy,15,Pregnancy childbirth puerperium
+16,P00-P96,Perinatal conditions,16,Newborn conditions
+17,Q00-Q99,Congenital,17,Birth defects chromosomal abnormalities
+18,R00-R99,Symptoms and signs,18,Abnormal findings ill-defined
+19,S00-T88,Injury and poisoning,19,Trauma poisoning external causes
+20,Z00-Z99,Health status,20,Encounters for screening counseling

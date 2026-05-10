@@ -1,0 +1,30 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# dbt package dependencies.
+#
+# - dbt_utils: standard utility macros (date_spine, surrogate_key, equality
+#   tests, generate_series, etc.). Industry baseline.
+# - dbt_expectations: GX-style expectation tests as dbt tests. Pairs with the
+#   GX gates at silver/gold in the streaming layer for double-coverage.
+# - elementary: data observability — model-level run health, anomaly detection,
+#   freshness tracking. Materializes to dbt_artifacts schema.
+#
+# Pinned by minor version to balance compatibility with reproducibility. Bump
+# carefully; ``dbt deps`` + ``dbt build`` + the full test suite gates upgrades.
+# ─────────────────────────────────────────────────────────────────────────────
+packages:
+  - package: dbt-labs/dbt_utils
+    version: ['>=1.1.0', '<2.0.0']
+
+  - package: calogica/dbt_expectations
+    version: ['>=0.10.0', '<0.11.0']
+
+  # NOTE: ``elementary-data/elementary`` is intentionally NOT included.
+  # Elementary's incremental ``edr`` models (dbt_models, dbt_columns, etc.)
+  # don't compile cleanly on DuckDB 1.9 — Parser errors on apostrophe-
+  # escaping and ``dateadd`` function-name differences. Reintroduce when:
+  #   1. Running against Snowflake (the production target where elementary
+  #      is well-tested), AND
+  #   2. dbt-duckdb tracks elementary's compatibility matrix.
+  # Project still tracks data quality via the singular tests in tests/
+  # plus the GX gates in the streaming pipeline. Elementary is a
+  # nice-to-have for run-history dashboards, not a foundational dependency.

@@ -1,0 +1,15 @@
+metric_name,unit,normal_min,normal_max,critical_min,critical_max,category
+heart_rate_bpm,BPM,60,100,30,220,vital
+spo2_pct,%,95,100,70,100,vital
+steps_since_last,count,0,2000,0,10000,activity
+skin_temp_celsius,celsius,35.5,37.5,30,42,vital
+hrv_ms,ms,20,60,5,200,vital
+respiration_rate,breaths_per_min,12,20,8,40,vital
+sleep_stage,enum,0,4,0,4,sleep
+blood_glucose_mgdl,mg_dl,70,140,40,400,metabolic
+bp_systolic_mmhg,mm_hg,90,120,70,220,vital
+bp_diastolic_mmhg,mm_hg,60,80,40,130,vital
+heart_rate_max_bpm,BPM,80,180,30,250,vital
+energy_kj,kj,0,15000,0,30000,activity
+body_temp_celsius,celsius,36.1,37.2,30,42,vital
+oxygen_saturation_pct,%,95,100,70,100,vital

@@ -1,0 +1,108 @@
+name: pulsetrack
+version: '1.0.0'
+config-version: 2
+
+profile: pulsetrack
+
+# Standard dbt directories.
+model-paths:    ["models"]
+analysis-paths: ["analyses"]
+test-paths:     ["tests"]
+seed-paths:     ["seeds"]
+macro-paths:    ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+  - "logs"
+
+# ── Project-level vars ────────────────────────────────────────────────────────
+# - ``timezone`` is used by dim_date and freshness checks. Healthcare data
+#   should be UTC end-to-end; medallion stays UTC and downstream BI converts.
+# - ``vital_anomaly_zscore`` is the z-score threshold for ``classify_vital_range``
+#   to mark a reading anomalous.
+# - ``identity_link_rate_alert_threshold`` triggers an analytics-side warning
+#   when bridge link-rate dips below this fraction.
+vars:
+  timezone: 'UTC'
+  vital_anomaly_zscore: 3.0
+  identity_link_rate_alert_threshold: 0.85
+  scd2_far_future_date: '9999-12-31'
+
+# ── Models config ─────────────────────────────────────────────────────────────
+# Layered materialization strategy:
+#   - staging:      view (cheap; just rename + cast; keep close to source)
+#   - intermediate: ephemeral (compiled into downstream marts; never persisted)
+#   - marts/core:   table (rebuilt on each run; the published gold layer)
+#   - marts/analytics: incremental where supported (large derived tables)
+#
+# Materialization is overridable per-model via ``{{ config(materialized='table') }}``.
+models:
+  pulsetrack:
+    +persist_docs:
+      relation: true
+      columns: true
+    staging:
+      +materialized: view
+      +schema: staging
+      +tags: ['staging', 'silver_consumer']
+    intermediate:
+      +materialized: ephemeral
+      +schema: intermediate
+      +tags: ['intermediate']
+    marts:
+      +materialized: table
+      +schema: marts
+      core:
+        +tags: ['gold', 'core']
+        # Per-model tests at column level live in _core.yml; project-wide
+        # contract is "every dim has surrogate key + every fact has all FKs".
+      analytics:
+        +tags: ['gold', 'analytics']
+        # Analytics models are heavier; consider incremental for high-row tables.
+
+# ── Seeds config ──────────────────────────────────────────────────────────────
+# Reference-data seeds versioned in repo (metric ranges, condition categories,
+# ICD-10 codes). Plus fixture seeds the local DuckDB target reads as the
+# stand-in for cloud silver tables.
+seeds:
+  pulsetrack:
+    +schema: seeds
+    +quote_columns: false
+    fixture_silver:
+      +tags: ['fixture']
+      +column_types:
+        event_timestamp:    timestamp
+        sync_timestamp:     timestamp
+        ingestion_timestamp: timestamp
+        valid_from:          timestamp
+        valid_to:            timestamp
+        recorded_at:         timestamp
+
+# ── Snapshots config ──────────────────────────────────────────────────────────
+# Per-snapshot config in the .sql file overrides these defaults. snap_dim_device
+# uses ``check`` strategy with check_cols=[firmware_version, device_type]; the
+# project-level defaults below are intentionally minimal (no updated_at default
+# — that would conflict with check-strategy snapshots).
+snapshots:
+  pulsetrack:
+    +target_schema: snapshots
+
+# ── Tests config ──────────────────────────────────────────────────────────────
+tests:
+  pulsetrack:
+    +severity: warn   # default; per-test override to 'error' for blocking
+    +store_failures: true
+    +schema: dbt_test_failures
+
+# ── On-run hooks ──────────────────────────────────────────────────────────────
+# Snowflake target grants SELECT on all marts to a downstream-consumer role.
+# DuckDB target skips (no roles).
+on-run-end:
+  - "{{ pulsetrack.grant_select_to_role('PULSETRACK_READER') }}"
+
+# ── Documentation ─────────────────────────────────────────────────────────────
+# 100% column documentation coverage is enforced by ``dbt-checkpoint`` in CI.
+# This config keeps docs in the relation comments + column comments, so a
+# lakehouse user querying via Athena/Snowflake sees the descriptions inline.

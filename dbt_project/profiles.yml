@@ -1,0 +1,60 @@
+pulsetrack:
+  target: dev
+  outputs:
+    # ── Local/CI: DuckDB ─────────────────────────────────────────────────────
+    # DuckDB runs in-process with the parquet/httpfs/delta extensions auto-loaded.
+    # ``path`` is a single .duckdb file the dbt run writes its catalog into.
+    # Source data resolves either to:
+    #   1. Fixture seeds (default, what CI runs against — see fixtures/silver/)
+    #   2. Real S3 paths via httpfs if AWS_PROFILE is set and var('use_s3') is on
+    dev:
+      type: duckdb
+      path: /tmp/pulsetrack_dbt.duckdb
+      threads: 4
+      extensions:
+        - parquet
+        - httpfs
+        - delta
+      # External-source paths read by dbt-duckdb's source_loader.
+      # Fixture CSVs live in dbt_project/fixtures/silver/.
+      external_root: '{{ env_var("DBT_EXTERNAL_ROOT", env_var("PWD") ~ "/dbt_project/fixtures") }}'
+      settings:
+        memory_limit: '4GB'
+        threads: 4
+        # S3 region for httpfs; ignored when reading local files.
+        s3_region: '{{ env_var("AWS_DEFAULT_REGION", "us-east-1") }}'
+
+    # ── Cloud: Snowflake ─────────────────────────────────────────────────────
+    # Production target. Iceberg tables in S3 are exposed to Snowflake via
+    # external Iceberg integration (Snowflake reads the same data files the
+    # EMR pipeline writes — single source of truth).
+    snowflake:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      role: PULSETRACK_ROLE
+      database: PULSETRACK
+      warehouse: PULSETRACK_WH
+      schema: GOLD
+      threads: 8
+      query_tag: 'dbt-pulsetrack'
+      client_session_keep_alive: false
+      # Iceberg catalog integration name in Snowflake — points at the Glue
+      # catalog the EMR pipeline writes through.
+      query_tag: '{"team":"data-platform","project":"pulsetrack","run":"{{ run_started_at }}"}'
+
+    # ── Cloud: Snowflake (production) ────────────────────────────────────────
+    # Same as ``snowflake`` target above but with a different schema and warehouse
+    # for production-grade isolation. Used by the weekly release workflow only.
+    prod:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      role: PULSETRACK_PROD_ROLE
+      database: PULSETRACK
+      warehouse: PULSETRACK_PROD_WH
+      schema: GOLD
+      threads: 16
+      query_tag: '{"team":"data-platform","project":"pulsetrack","env":"prod"}'

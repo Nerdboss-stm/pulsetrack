@@ -1,0 +1,11 @@
+medication_id,patient_email,mrn,rxnorm_code,medication_name,drug_class,prescribed_date,start_date,end_date,daily_dose_mg
+med_0001,alice@example.com,MRN-1001,860975,lisinopril,ACE_inhibitor,2025-03-15,2025-03-15,,10
+med_0002,alice@example.com,MRN-1001,617318,atorvastatin,statin,2025-06-20,2025-06-20,,20
+med_0003,bob@example.com,MRN-1002,435,albuterol,bronchodilator,2024-11-10,2024-11-10,,90
+med_0004,bob@example.com,MRN-1002,71535,sertraline,SSRI,2025-01-22,2025-01-22,,50
+med_0005,carol@example.com,MRN-1003,42347,fluoxetine,SSRI,2026-02-01,2026-02-01,,20
+med_0006,dave@example.com,MRN-1004,860975,lisinopril,ACE_inhibitor,2024-08-05,2024-08-05,,5
+med_0007,dave@example.com,MRN-1004,860975,lisinopril,ACE_inhibitor,2025-02-10,2025-02-10,,10
+med_0008,dave@example.com,MRN-1004,6809,metformin,biguanide,2025-09-12,2025-09-12,,500
+med_0009,dave@example.com,MRN-1004,6809,metformin,biguanide,2026-01-20,2026-01-20,,1000
+med_0010,eve@example.com,MRN-1005,5640,sumatriptan,triptan,2025-12-01,2025-12-01,,50

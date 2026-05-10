@@ -1,0 +1,408 @@
+version: 2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# marts/core — published gold-layer dimensions and facts.
+#
+# Discipline: 100% column documentation + at least one test per column.
+# This is the contract gold-consumers (BI, ML, downstream services) rely on.
+# ─────────────────────────────────────────────────────────────────────────────
+
+models:
+
+  - name: dim_date
+    description: |
+      Calendar dimension with medical-domain attributes. One row per day
+      from 2020-01-01 to 2035-12-31. Date-key surrogate is YYYYMMDD integer.
+    columns:
+      - name: date_key
+        description: Surrogate key (YYYYMMDD as integer).
+        tests: [not_null, unique]
+      - name: full_date
+        description: ISO date.
+        tests: [not_null, unique]
+      - name: year
+        description: Calendar year.
+        tests: [not_null]
+      - name: quarter
+        description: Calendar quarter 1-4.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 1, max_value: 4 }
+      - name: month
+        description: Calendar month 1-12.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 1, max_value: 12 }
+      - name: iso_week
+        description: ISO week 1-53.
+        tests: [not_null]
+      - name: day_of_month
+        description: 1-31.
+        tests: [not_null]
+      - name: day_of_week
+        description: 0=Sunday through 6=Saturday.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 6 }
+      - name: day_of_year
+        description: 1-366.
+        tests: [not_null]
+      - name: day_name
+        description: Full day name (Sunday, Monday, ...).
+        tests: [not_null]
+      - name: is_weekend
+        description: TRUE for Saturday and Sunday.
+        tests: [not_null]
+      - name: month_name
+        description: Full month name (January, February, ...).
+        tests: [not_null]
+      - name: is_flu_season
+        description: TRUE for Northern Hemisphere flu season (Oct-Mar).
+        tests: [not_null]
+      - name: is_pollen_season
+        description: TRUE for typical pollen season (Apr-Sep).
+        tests: [not_null]
+      - name: is_daylight_savings
+        description: TRUE for months when DST is typically active in the US.
+        tests: [not_null]
+      - name: fiscal_year_label
+        description: 'Healthcare-org fiscal year (Apr-Mar). Format: FY2026.'
+        tests: [not_null]
+
+  - name: dim_metric
+    description: |
+      Junk dimension for sensor metrics. Rows match metric_normal_ranges seed.
+    columns:
+      - name: metric_key
+        description: SHA-256 surrogate over metric_name.
+        tests: [not_null, unique]
+      - name: metric_name
+        description: Source metric name (matches stg_sensor_readings.metric_name).
+        tests: [not_null, unique]
+      - name: unit
+        description: Measurement unit (BPM, %, mg_dL, mm_Hg, etc.).
+        tests: [not_null]
+      - name: normal_min
+        description: Lower bound of clinical normal range.
+        tests: [not_null]
+      - name: normal_max
+        description: Upper bound of clinical normal range.
+        tests: [not_null]
+      - name: critical_min
+        description: Lower bound below which the value is implausible.
+        tests: [not_null]
+      - name: critical_max
+        description: Upper bound above which the value is implausible.
+        tests: [not_null]
+      - name: category
+        description: Metric category (vital, sleep, activity, metabolic).
+        tests:
+          - not_null
+          - accepted_values: { values: ['vital', 'sleep', 'activity', 'metabolic'] }
+      - name: normal_range_width
+        description: Derived. normal_max - normal_min.
+      - name: dbt_loaded_at
+        description: When this row was loaded by dbt.
+        tests: [not_null]
+
+  - name: dim_condition_category
+    description: ICD-10 chapter rollup. Source = condition_categories seed.
+    columns:
+      - name: category_key
+        description: Surrogate key.
+        tests: [not_null, unique]
+      - name: category_code
+        description: 'ICD-10 chapter range (e.g., I00-I99).'
+        tests: [not_null, unique]
+      - name: category_name
+        description: Human-readable chapter name.
+        tests: [not_null]
+      - name: icd10_chapter
+        description: Chapter number 1-22.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 1, max_value: 22 }
+      - name: description
+        description: One-line summary of conditions in this chapter.
+        tests: [not_null]
+      - name: dbt_loaded_at
+        description: When this row was loaded by dbt.
+
+  - name: dim_patient
+    description: |
+      Patient dimension. PII-MASKED — emails and MRNs are SHA-256 hashed,
+      no full names. Joins to fact tables on patient_key.
+    columns:
+      - name: patient_key
+        description: SHA-256 surrogate over patient_email. Primary key. Joins to identity_bridge.
+        tests: [not_null, unique]
+      - name: patient_email_hash
+        description: PII-masked email. Searchable (deterministic hash).
+        tests: [not_null]
+      - name: mrn_hash
+        description: PII-masked MRN.
+      - name: device_account_count
+        description: Count of distinct device-account pairings for this patient.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 0 }
+      - name: device_count
+        description: Count of distinct device_ids seen in sensor readings.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 0 }
+      - name: most_recent_firmware
+        description: Latest firmware version seen across this patient's devices.
+      - name: total_conditions
+        description: Total ICD-10 conditions in EHR.
+        tests: [not_null]
+      - name: active_conditions
+        description: Count of active EHR conditions.
+        tests: [not_null]
+      - name: primary_conditions
+        description: Count of primary diagnoses.
+        tests: [not_null]
+      - name: highest_condition_severity
+        description: Maximum severity_default across all conditions (mild < moderate < severe).
+      - name: total_medications
+        description: Total medication prescriptions.
+        tests: [not_null]
+      - name: active_medications
+        description: Count of currently-active medications.
+        tests: [not_null]
+      - name: distinct_drug_classes
+        description: Unique drug_class values across the patient's medications.
+        tests: [not_null]
+      - name: total_pharmacy_fills
+        description: Total OpenFDA pharmacy fills.
+        tests: [not_null]
+      - name: adverse_event_count
+        description: Count of fills with non-none adverse event.
+        tests: [not_null]
+      - name: max_adverse_event_score
+        description: Highest adverse_event severity score (0-4).
+      - name: first_sensor_event
+        description: Earliest event_timestamp seen for this patient.
+      - name: last_sensor_event
+        description: Latest event_timestamp seen for this patient.
+      - name: health_complexity_bucket
+        description: 'Bucketed health-complexity for BI: high, medium, low, none.'
+        tests:
+          - accepted_values: { values: ['high', 'medium', 'low', 'none'] }
+      - name: health_complexity_score
+        description: Derived weighted score combining conditions + meds + adverse events.
+        tests: [not_null]
+      - name: dbt_loaded_at
+        description: When this row was loaded by dbt.
+        tests: [not_null]
+
+  - name: dim_device
+    description: |
+      SCD2 device dimension. Tracks firmware history.
+      Multiple rows per device_id, one per firmware_version. is_current
+      flags the latest.
+    columns:
+      - name: device_key
+        description: SHA-256 surrogate over (device_id, firmware_version, valid_from).
+        tests: [not_null, unique]
+      - name: device_id
+        description: Source device identifier.
+        tests: [not_null]
+      - name: device_type
+        description: Device family.
+        tests:
+          - not_null
+          - accepted_values: { values: ['smartwatch', 'chest_strap', 'sleep_ring', 'blood_pressure_cuff'] }
+      - name: firmware_version
+        description: Firmware version string.
+        tests: [not_null]
+      - name: valid_from
+        description: SCD2 effective-from. First event_timestamp seen with this firmware.
+        tests: [not_null]
+      - name: valid_to
+        description: SCD2 effective-to. First event_timestamp of next firmware (or 9999-12-31 if current).
+        tests: [not_null]
+      - name: is_current
+        description: TRUE for the latest firmware row of this device.
+        tests: [not_null]
+      - name: last_seen_at
+        description: Most recent event_timestamp for this device (across all firmware versions).
+      - name: reading_count
+        description: Total readings ingested from this device (across all firmware versions).
+        tests:
+          - dbt_utils.accepted_range: { min_value: 0 }
+      - name: dbt_loaded_at
+        description: When this row was loaded by dbt.
+
+  - name: fact_vital_daily_summary
+    description: |
+      Per-patient × metric × day aggregation. The published gold table for
+      BI vital-trend dashboards. Grain = (patient_key, metric_key, date_key).
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - patient_key
+            - metric_key
+            - date_key
+    columns:
+      - name: patient_key
+        description: FK to dim_patient.
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_patient'), field: patient_key }
+      - name: metric_key
+        description: FK to dim_metric.
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_metric'), field: metric_key }
+      - name: date_key
+        description: FK to dim_date.
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_date'), field: date_key }
+      - name: event_date
+        description: Event date (YYYY-MM-DD).
+        tests: [not_null]
+      - name: metric_name
+        description: Metric name.
+        tests: [not_null]
+      - name: unit
+        description: Metric unit.
+        tests: [not_null]
+      - name: valid_reading_count
+        description: Number of valid readings on this day.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 0 }
+      - name: invalid_reading_count
+        description: Number of invalid readings on this day (range failures).
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 0 }
+      - name: avg_value
+        description: Average of valid metric_values.
+      - name: min_value
+        description: Minimum of valid metric_values.
+      - name: max_value
+        description: Maximum of valid metric_values.
+      - name: stddev_value
+        description: Standard deviation of valid metric_values.
+      - name: median_value
+        description: Median of valid metric_values.
+      - name: p10_value
+        description: 10th percentile of valid metric_values.
+      - name: p90_value
+        description: 90th percentile of valid metric_values.
+      - name: validity_rate
+        description: valid / (valid + invalid). 0-1.
+        tests:
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 1 }
+      - name: dbt_loaded_at
+        description: When this row was loaded by dbt.
+
+  - name: fact_vital_reading
+    description: |
+      Atomic per-reading per-metric fact. One row per (reading_id, metric_name).
+      Used by ML pipelines requiring granular data.
+    columns:
+      - name: reading_metric_key
+        description: SHA-256 surrogate. Primary key.
+        tests: [not_null, unique]
+      - name: patient_key
+        description: FK to dim_patient.
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_patient'), field: patient_key }
+      - name: metric_key
+        description: FK to dim_metric.
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_metric'), field: metric_key }
+      - name: date_key
+        description: FK to dim_date.
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_date'), field: date_key }
+      - name: reading_id
+        description: Original reading_id from the producer.
+        tests: [not_null]
+      - name: device_id
+        description: Source device.
+        tests: [not_null]
+      - name: device_type
+        description: Device family.
+        tests: [not_null]
+      - name: metric_name
+        description: Metric name.
+        tests: [not_null]
+      - name: metric_value
+        description: Numeric metric value.
+      - name: event_timestamp
+        description: When the reading was taken on-device.
+        tests: [not_null]
+      - name: sync_timestamp
+        description: When the device synced.
+        tests: [not_null]
+      - name: sync_latency_seconds
+        description: sync - event in seconds.
+      - name: is_late_arriving
+        description: TRUE if sync-event lag exceeded threshold.
+        tests: [not_null]
+      - name: battery_pct
+        description: Battery at reading time.
+      - name: firmware_version
+        description: Firmware version at reading time.
+        tests: [not_null]
+      - name: source_type
+        description: Data lineage indicator.
+        tests:
+          - not_null
+          - accepted_values: { values: ['simulator', 'whoop_api', 'openfda'] }
+      - name: vital_status
+        description: 'Classification per pulsetrack.classify_vital_range: normal/warning/critical/unknown.'
+        tests:
+          - not_null
+          - accepted_values: { values: ['normal', 'warning', 'critical', 'unknown'] }
+      - name: dbt_loaded_at
+        description: When this row was loaded by dbt.
+
+  - name: fact_lab_result
+    description: |
+      LOINC-coded lab result fact. Currently sourced from EHR conditions as
+      a proxy until the EHR pipeline emits a dedicated lab-results silver stream.
+    columns:
+      - name: lab_result_key
+        description: SHA-256 surrogate (currently = condition_key).
+        tests: [not_null, unique]
+      - name: patient_key
+        description: FK to dim_patient.
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_patient'), field: patient_key }
+      - name: date_key
+        description: FK to dim_date.
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_date'), field: date_key }
+      - name: icd10_code
+        description: ICD-10 code (proxy for LOINC until lab pipeline lands).
+        tests: [not_null]
+      - name: test_name
+        description: Test or condition name.
+        tests: [not_null]
+      - name: category_code
+        description: ICD-10 chapter code (proxy for lab category).
+      - name: category_name
+        description: Chapter name.
+      - name: severity_default
+        description: Default severity per icd10_codes seed.
+      - name: clinical_status
+        description: Clinical status (active/resolved/inactive).
+      - name: is_primary_diagnosis
+        description: Whether this is the patient's primary condition.
+      - name: result_date
+        description: When the lab result/condition was recorded (proxy = onset_date).
+      - name: recorded_at
+        description: When the EHR recorded the result.
+      - name: dbt_loaded_at
+        description: When this row was loaded by dbt.

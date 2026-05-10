@@ -1,0 +1,312 @@
+version: 2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Staging models — column-level documentation + tests.
+#
+# Discipline: every column in every staging model has a ``description`` and at
+# least one test. Project-level CI gate (dbt-checkpoint) enforces this.
+# Matches WHOOP's "99% documentation coverage" — we go for 100%.
+# ─────────────────────────────────────────────────────────────────────────────
+
+models:
+
+  - name: stg_sensor_readings
+    description: |
+      Staging view over silver ``sensor_readings``. Adds a deterministic
+      ``reading_metric_key`` surrogate, casts metric_value/timestamps,
+      derives ``sync_latency_seconds`` and ``event_date`` for downstream
+      grain definitions.
+    config:
+      contract:
+        enforced: false
+    columns:
+      - name: reading_metric_key
+        description: SHA-256 surrogate key over (reading_id, metric_name). Primary key for downstream fact joins.
+        data_type: varchar
+        tests:
+          - not_null
+          - unique
+      - name: reading_id
+        description: Globally unique reading identifier from the producer.
+        data_type: varchar
+        tests:
+          - not_null
+      - name: device_id
+        description: Per-device identifier matching the ^[A-Z]{2}-[A-Z0-9]{3}-\d{5}$ regex.
+        data_type: varchar
+        tests:
+          - not_null
+      - name: device_type
+        description: Device family. Source enum.
+        data_type: varchar
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['smartwatch', 'chest_strap', 'sleep_ring', 'blood_pressure_cuff']
+      - name: device_account_id
+        description: Stable user-device pairing identifier — bridge key for identity resolution.
+        data_type: varchar
+        tests:
+          - not_null
+      - name: patient_email
+        description: Email when known at device level; null for clinical-distributed devices.
+        data_type: varchar
+      - name: metric_name
+        description: One of the metrics defined in dim_metric and metric_normal_ranges.
+        data_type: varchar
+        tests:
+          - not_null
+          - relationships:
+              to: ref('metric_normal_ranges')
+              field: metric_name
+              severity: warn
+      - name: metric_value
+        description: Numeric metric value. Units come from dim_metric.unit.
+        data_type: double
+      - name: firmware_version
+        description: Format \d+\.\d+\.\d+. Drives SCD2 in dim_device.
+        data_type: varchar
+        tests:
+          - not_null
+          # NOTE: a regex shape test is more precise but the syntax differs
+          # between DuckDB (REGEXP_MATCHES), Snowflake (REGEXP_LIKE), and
+          # Spark (RLIKE). Using ``not_null`` here and validating the format
+          # at the producer side (data_generators/wearable_generator.py)
+          # rather than fighting cross-warehouse SQL.
+      - name: battery_pct
+        description: Battery percentage 0-100. Lower battery correlates with reading reliability.
+        data_type: integer
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+              severity: warn
+      - name: event_timestamp
+        description: When the reading was taken on-device (semantic time, used by watermarks downstream).
+        data_type: timestamp
+        tests:
+          - not_null
+      - name: sync_timestamp
+        description: When the device synced to ingestion. Latency = sync - event.
+        data_type: timestamp
+        tests:
+          - not_null
+      - name: source_type
+        description: Data lineage indicator — simulator, whoop_api, or openfda.
+        data_type: varchar
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['simulator', 'whoop_api', 'openfda']
+      - name: is_valid
+        description: True if the metric_value passed silver's range check (METRIC_RANGES).
+        data_type: boolean
+        tests:
+          - not_null
+      - name: is_late_arriving
+        description: True if sync-event lag exceeded settings.late_arrival_threshold_seconds (1 hour).
+        data_type: boolean
+        tests:
+          - not_null
+      - name: sync_latency_seconds
+        description: Derived. EPOCH(sync - event) in seconds.
+        data_type: double
+      - name: event_date
+        description: Derived. Date partition for downstream marts.
+        data_type: date
+
+  - name: stg_ehr_conditions
+    description: |
+      Staging view over silver ``ehr_conditions``. Joins ICD-10 to
+      condition_categories for the ICD-10 chapter rollup. Adds a
+      ``condition_key`` surrogate and a ``patient_key`` from the
+      patient_email.
+    columns:
+      - name: condition_key
+        description: SHA-256 over condition_id. Primary key.
+        tests: [not_null, unique]
+      - name: patient_key
+        description: SHA-256 over patient_email. FK to dim_patient.
+        tests: [not_null]
+      - name: condition_id
+        description: Per-condition unique identifier from the EHR source.
+        tests: [not_null, unique]
+      - name: patient_email
+        description: Patient email — primary linkage key.
+        tests: [not_null]
+      - name: mrn
+        description: Hospital Medical Record Number.
+        tests: [not_null]
+      - name: icd10_code
+        description: ICD-10-CM diagnosis code.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('icd10_codes')
+              field: icd10_code
+              severity: warn
+      - name: condition_name
+        description: Human-readable condition name from icd10_codes seed.
+      - name: category_code
+        description: ICD-10 chapter range (e.g., I00-I99).
+        tests:
+          - relationships:
+              to: ref('condition_categories')
+              field: category_code
+      - name: category_name
+        description: Human-readable chapter name from condition_categories seed.
+      - name: icd10_chapter
+        description: ICD-10 chapter number 1-22.
+      - name: severity_default
+        description: Default severity for this code from icd10_codes seed (mild, moderate, severe).
+      - name: onset_date
+        description: When the condition began.
+      - name: recorded_at
+        description: When the condition was recorded in the EHR.
+        tests: [not_null]
+      - name: clinical_status
+        description: FHIR clinical-status (active, resolved, inactive).
+        tests:
+          - accepted_values:
+              values: ['active', 'resolved', 'inactive']
+      - name: is_primary
+        description: Whether this is the patient's primary condition.
+        tests: [not_null]
+
+  - name: stg_ehr_medications
+    description: |
+      Staging view over silver ``ehr_medications``. Computes ``is_active``
+      and ``days_on_medication`` for downstream timeline models.
+    columns:
+      - name: medication_key
+        description: SHA-256 over medication_id. Primary key.
+        tests: [not_null, unique]
+      - name: patient_key
+        description: SHA-256 over patient_email. FK to dim_patient.
+        tests: [not_null]
+      - name: medication_id
+        description: Per-prescription unique identifier.
+        tests: [not_null, unique]
+      - name: patient_email
+        description: Patient identifier.
+        tests: [not_null]
+      - name: mrn
+        description: Hospital Medical Record Number.
+      - name: rxnorm_code
+        description: RxNorm concept identifier.
+      - name: medication_name
+        description: Generic name of the drug.
+        tests: [not_null]
+      - name: drug_class
+        description: Therapeutic class.
+        tests: [not_null]
+      - name: prescribed_date
+        description: When the prescription was written.
+      - name: start_date
+        description: When the patient started taking it.
+        tests: [not_null]
+      - name: end_date
+        description: When the prescription ended (NULL if active).
+      - name: daily_dose_mg
+        description: Daily dosage in milligrams.
+      - name: is_active
+        description: Derived. TRUE if no end_date or end_date in future.
+        tests: [not_null]
+      - name: days_on_medication
+        description: Derived. Days from start_date to end_date (or today if active).
+
+  - name: stg_pharmacy_fills
+    description: |
+      Staging view over silver ``pharmacy_fills``. Adds numeric
+      ``adverse_event_score`` for ranking and ``fda_processing_days`` derived.
+    columns:
+      - name: fill_key
+        description: SHA-256 over fill_id. Primary key.
+        tests: [not_null, unique]
+      - name: patient_key
+        description: SHA-256 over patient_email. FK to dim_patient.
+      - name: fill_id
+        description: Per-fill unique identifier.
+        tests: [not_null, unique]
+      - name: report_id
+        description: FDA report identifier.
+        tests: [not_null]
+      - name: patient_email
+        description: Patient identifier when reported by FDA.
+      - name: drug_name
+        description: Drug name as reported.
+        tests: [not_null]
+      - name: drug_class
+        description: Therapeutic class.
+      - name: fill_quantity
+        description: Units dispensed.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              severity: warn
+      - name: days_supply
+        description: Intended days of coverage.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              severity: warn
+      - name: adverse_event
+        description: Severity enum.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['none', 'mild', 'moderate', 'severe', 'death']
+      - name: adverse_event_score
+        description: Derived. Numeric mapping of adverse_event for ranking (0-4).
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 4
+      - name: event_timestamp
+        description: When the adverse event occurred (or fill date if no event).
+        tests: [not_null]
+      - name: fda_received_at
+        description: When FDA received the report.
+      - name: is_valid
+        description: Range-check pass.
+        tests: [not_null]
+      - name: fda_processing_days
+        description: Derived. fda_received_at - event_timestamp in days.
+
+  - name: stg_identity_bridge
+    description: |
+      Staging view over silver ``identity_bridge``. Adds bridge_key and
+      ``is_resolved`` derived flag.
+    columns:
+      - name: bridge_key
+        description: SHA-256 over (identifier_type, identifier_value). Primary key.
+        tests: [not_null, unique]
+      - name: identifier_type
+        description: Type of external identifier.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['email', 'hospital_mrn', 'device_account_id', 'fda_report_id']
+      - name: identifier_value
+        description: The actual identifier value.
+        tests: [not_null]
+      - name: patient_key
+        description: SHA-256 of canonical patient_email. NULL if pending.
+      - name: link_status
+        description: Resolution state.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['linked', 'pending_registration', 'pending_email_linkage']
+      - name: link_method
+        description: How the link was established.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['ehr_direct', 'transitive_email', 'whoop_api_account', 'pharmacy_email']
+      - name: recorded_at
+        description: When the bridge row was created or last updated.
+        tests: [not_null]
+      - name: is_resolved
+        description: Derived. patient_key IS NOT NULL AND link_status = 'linked'.
+        tests: [not_null]

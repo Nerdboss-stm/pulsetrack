@@ -1,0 +1,11 @@
+condition_id,patient_email,mrn,icd10_code,onset_date,recorded_at,clinical_status,is_primary
+cond_0001,alice@example.com,MRN-1001,I10,2025-03-15,2025-03-15 09:00:00,active,true
+cond_0002,alice@example.com,MRN-1001,E78.5,2025-06-20,2025-06-20 14:30:00,active,false
+cond_0003,bob@example.com,MRN-1002,J45.909,2024-11-10,2024-11-10 10:15:00,active,true
+cond_0004,bob@example.com,MRN-1002,F41.1,2025-01-22,2025-01-22 11:00:00,active,false
+cond_0005,carol@example.com,MRN-1003,F32.9,2026-02-01,2026-02-01 09:30:00,active,true
+cond_0006,carol@example.com,MRN-1003,M54.5,2026-03-10,2026-03-10 14:00:00,active,false
+cond_0007,dave@example.com,MRN-1004,I10,2024-08-05,2024-08-05 08:45:00,active,true
+cond_0008,dave@example.com,MRN-1004,E11.9,2025-09-12,2025-09-12 10:30:00,active,false
+cond_0009,dave@example.com,MRN-1004,K21.9,2026-01-15,2026-01-15 11:15:00,active,false
+cond_0010,eve@example.com,MRN-1005,G43.909,2025-12-01,2025-12-01 09:00:00,active,true

@@ -1,0 +1,9 @@
+fill_id,report_id,patient_email,drug_name,drug_class,fill_quantity,days_supply,adverse_event,event_timestamp,fda_received_at,is_valid
+fill_0001,FDA-2026-001,alice@example.com,lisinopril,ACE_inhibitor,30,30,none,2026-04-01 10:00:00,2026-04-03 12:00:00,true
+fill_0002,FDA-2026-002,alice@example.com,atorvastatin,statin,30,30,none,2026-04-15 11:00:00,2026-04-17 14:00:00,true
+fill_0003,FDA-2026-003,bob@example.com,albuterol,bronchodilator,1,30,mild,2026-04-05 09:30:00,2026-04-08 11:00:00,true
+fill_0004,FDA-2026-004,bob@example.com,sertraline,SSRI,30,30,moderate,2026-04-20 10:15:00,2026-04-22 13:30:00,true
+fill_0005,FDA-2026-005,carol@example.com,fluoxetine,SSRI,30,30,none,2026-04-10 14:00:00,2026-04-12 16:00:00,true
+fill_0006,FDA-2026-006,dave@example.com,lisinopril,ACE_inhibitor,90,90,none,2026-04-25 11:30:00,2026-04-28 09:00:00,true
+fill_0007,FDA-2026-007,dave@example.com,metformin,biguanide,90,90,severe,2026-04-25 11:30:00,2026-04-28 09:00:00,true
+fill_0008,FDA-2026-008,eve@example.com,sumatriptan,triptan,9,30,none,2026-04-30 10:00:00,2026-05-02 12:00:00,true

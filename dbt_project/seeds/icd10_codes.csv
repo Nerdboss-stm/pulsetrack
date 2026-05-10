@@ -1,0 +1,26 @@
+icd10_code,condition_name,category_code,severity_default
+I10,Essential hypertension,I00-I99,moderate
+I50.9,Heart failure unspecified,I00-I99,severe
+I25.10,Atherosclerotic heart disease,I00-I99,severe
+I48.91,Atrial fibrillation unspecified,I00-I99,moderate
+I63.9,Cerebral infarction unspecified,I00-I99,severe
+E11.9,Type 2 diabetes mellitus without complications,E00-E89,moderate
+E11.65,Type 2 diabetes mellitus with hyperglycemia,E00-E89,severe
+E78.5,Hyperlipidemia unspecified,E00-E89,mild
+J45.909,Asthma unspecified uncomplicated,J00-J99,mild
+J44.9,COPD unspecified,J00-J99,severe
+J18.9,Pneumonia unspecified,J00-J99,severe
+J12.9,Viral pneumonia unspecified,J00-J99,moderate
+N18.6,End stage renal disease,N00-N99,severe
+N18.3,Chronic kidney disease stage 3,N00-N99,moderate
+F32.9,Major depressive disorder unspecified,F00-F99,moderate
+F41.1,Generalized anxiety disorder,F00-F99,mild
+G43.909,Migraine unspecified intractable,G00-G99,moderate
+G40.909,Epilepsy unspecified,G00-G99,severe
+M79.3,Panniculitis unspecified,M00-M99,mild
+M54.5,Low back pain,M00-M99,mild
+K21.9,Gastroesophageal reflux disease,K00-K95,mild
+K57.30,Diverticulosis of large intestine,K00-K95,mild
+R51,Headache,R00-R99,mild
+R10.9,Unspecified abdominal pain,R00-R99,mild
+Z00.00,Encounter for general adult medical examination,Z00-Z99,minimal

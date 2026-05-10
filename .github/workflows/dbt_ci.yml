@@ -1,0 +1,184 @@
+name: dbt CI (Weekly Release Cadence)
+
+on:
+  pull_request:
+    paths:
+      - 'dbt_project/**'
+      - '.github/workflows/dbt_ci.yml'
+  workflow_dispatch: {}
+  # Weekly release: every Monday at 06:00 UTC. Matches WHOOP's published
+  # cadence — gold-mart freshness on a regular schedule, not continuous.
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  # ── Job 1: PR validation against fixture seeds (DuckDB) ──────────────────
+  dbt-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: dbt_project
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dbt-duckdb + dbt-utils
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            "dbt-duckdb>=1.7,<1.10" \
+            "dbt-core>=1.7,<1.10"
+
+      - name: Set DBT_PROFILES_DIR + external_root
+        run: |
+          echo "DBT_PROFILES_DIR=$GITHUB_WORKSPACE/dbt_project" >> "$GITHUB_ENV"
+          echo "DBT_EXTERNAL_ROOT=$GITHUB_WORKSPACE/dbt_project/fixtures" >> "$GITHUB_ENV"
+
+      - name: dbt deps (install package dependencies)
+        run: dbt deps
+
+      - name: dbt seed (load fixture + reference data)
+        run: dbt seed --target dev --full-refresh
+
+      - name: dbt build (compile + run + test, in dependency order)
+        run: dbt build --target dev --fail-fast
+
+      - name: dbt docs generate (produces docs site)
+        run: dbt docs generate --target dev
+
+      - name: Upload manifest + run_results for downstream tools
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dbt-artifacts-${{ github.sha }}
+          path: |
+            dbt_project/target/manifest.json
+            dbt_project/target/run_results.json
+            dbt_project/target/index.html
+            dbt_project/target/catalog.json
+          retention-days: 14
+
+  # ── Job 2: 100% documentation coverage gate ─────────────────────────────
+  # Fails the PR if any column in marts/core or staging lacks a description.
+  doc-coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: dbt-check
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download dbt artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dbt-artifacts-${{ github.sha }}
+          path: dbt_project/target
+
+      - name: Check 100% column documentation coverage
+        run: |
+          python <<'PY'
+          import json
+          import sys
+
+          with open('dbt_project/target/manifest.json') as f:
+              manifest = json.load(f)
+
+          missing = []
+          for unique_id, node in manifest['nodes'].items():
+              # Only check published gold + staging (analytics is internal).
+              if not (
+                  node.get('resource_type') == 'model'
+                  and any(
+                      tag in node.get('tags', [])
+                      for tag in ('staging', 'core')
+                  )
+              ):
+                  continue
+              for col_name, col in node.get('columns', {}).items():
+                  if not col.get('description'):
+                      missing.append(f"{node['name']}.{col_name}")
+
+          if missing:
+              print(f"::error::{len(missing)} columns missing description:")
+              for col in missing[:50]:
+                  print(f"  - {col}")
+              if len(missing) > 50:
+                  print(f"  ... and {len(missing) - 50} more")
+              sys.exit(1)
+          print(f"OK: 100% column documentation coverage on staging + core models.")
+          PY
+
+  # ── Job 3 (manual / scheduled only): Snowflake prod build ───────────────
+  # Triggered by workflow_dispatch (manual) or weekly cron. PR runs skip this.
+  snowflake-build:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [dbt-check, doc-coverage]
+    defaults:
+      run:
+        working-directory: dbt_project
+    env:
+      SNOWFLAKE_ACCOUNT:  ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER:     ${{ secrets.SNOWFLAKE_USER }}
+      SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dbt-snowflake
+        run: |
+          pip install \
+            "dbt-snowflake>=1.7,<1.10" \
+            "dbt-core>=1.7,<1.10"
+
+      - name: Set DBT_PROFILES_DIR
+        run: echo "DBT_PROFILES_DIR=$GITHUB_WORKSPACE/dbt_project" >> "$GITHUB_ENV"
+
+      - name: dbt deps
+        run: dbt deps
+
+      - name: dbt build (Snowflake prod)
+        run: dbt build --target snowflake --fail-fast
+
+      - name: dbt snapshot (SCD2 device tracking)
+        run: dbt snapshot --target snowflake
+
+      - name: dbt source freshness (silver SLAs)
+        run: dbt source freshness --target snowflake
+
+      - name: dbt docs generate
+        run: dbt docs generate --target snowflake
+
+      - name: Upload Snowflake run artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbt-snowflake-${{ github.run_id }}
+          path: |
+            dbt_project/target/manifest.json
+            dbt_project/target/run_results.json
+            dbt_project/target/sources.json
+          retention-days: 90
+
+      # Notify on weekly-cron failure (silver pipeline likely stalled).
+      - name: Slack notify on failure
+        if: failure() && github.event_name == 'schedule'
+        run: |
+          echo "::warning::Weekly dbt build failed. Investigate silver freshness."
+          # In production this would post to a Slack webhook.

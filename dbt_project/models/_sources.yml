@@ -1,0 +1,228 @@
+version: 2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sources — the lakehouse silver layer.
+#
+# In PRODUCTION (Snowflake target), these resolve to real Iceberg tables in
+# the ``pulsetrack_silver_dev`` Glue database, exposed via Snowflake's
+# external-Iceberg catalog integration.
+#
+# In LOCAL/CI (DuckDB target), the staging models read from fixture seeds
+# instead — see the ``loaded_at_field`` and ``meta.duckdb_external_location``
+# overrides below. The dbt-duckdb adapter resolves sources by name to the
+# external_location when running with target.type == 'duckdb'.
+#
+# Freshness expectations:
+# - silver tables update continuously from streaming bronze→silver MERGE.
+# - At-least-once delivery + watermark dedup means a 30-min staleness
+#   indicates upstream issue (Spark stream stuck or Kafka rebalanced).
+# - 6-hour staleness is the warning; 24h is the error threshold.
+# ─────────────────────────────────────────────────────────────────────────────
+
+sources:
+  - name: silver
+    description: |
+      PulseTrack Silver layer — cleansed, validated, business-rule-enforced
+      tables from the streaming Spark pipeline. One row per (reading_id,
+      metric_name) for sensor data; one row per clinical event for EHR;
+      one row per fill for pharmacy. Identity bridge resolves all three
+      to a single ``patient_key``.
+
+      Catalog: ``glue_iceberg`` in production; staged into DuckDB from
+      fixture CSVs locally.
+    database: |
+      {%- if target.type == 'snowflake' -%}
+        PULSETRACK
+      {%- else -%}
+        {{ target.database | default('main') }}
+      {%- endif -%}
+    schema: |
+      {%- if target.type == 'snowflake' -%}
+        SILVER
+      {%- else -%}
+        main_seeds
+      {%- endif -%}
+    tags: ['silver', 'lakehouse']
+
+    # When DuckDB target reads, dbt-duckdb falls back to seeds via
+    # ``identifier`` — we point each source at its corresponding
+    # ``fixture_silver_*`` seed. Snowflake target uses the natural names.
+    tables:
+
+      - name: sensor_readings
+        identifier: |
+          {%- if target.type == 'duckdb' -%}
+            fixture_silver_sensor_readings
+          {%- else -%}
+            sensor_readings
+          {%- endif -%}
+        description: |
+          Sensor readings exploded one-row-per-metric. From silver
+          ``sensor_silver._process_batch`` foreachBatch MERGE INTO
+          (see transformations/bronze_to_silver/sensor_silver.py).
+        loaded_at_field: ingestion_timestamp
+        freshness:
+          warn_after: {count: 6, period: hour}
+          error_after: {count: 24, period: hour}
+        columns:
+          - name: reading_id
+            description: Globally unique reading identifier from the producer.
+          - name: device_id
+            description: Per-device identifier (e.g., WT-A00-00001).
+          - name: device_type
+            description: Device family — smartwatch, chest_strap, sleep_ring, blood_pressure_cuff.
+          - name: device_account_id
+            description: Stable user-device pairing identifier; bridge key for identity resolution.
+          - name: patient_email
+            description: Email when known at device level; null for clinical-distributed devices.
+          - name: metric_name
+            description: One of dim_metric.metric_name (heart_rate_bpm, spo2_pct, etc.).
+          - name: metric_value
+            description: Numeric metric value — units come from dim_metric.unit.
+          - name: firmware_version
+            description: Format \d+\.\d+\.\d+; drives SCD2 in dim_device.
+          - name: battery_pct
+            description: 0-100; degraded battery correlates with reading reliability.
+          - name: event_timestamp
+            description: When the reading was taken on-device (semantic time).
+          - name: sync_timestamp
+            description: When the device synced to our ingestion (latency = sync - event).
+          - name: source_type
+            description: 'simulator | whoop_api | openfda — data lineage indicator.'
+          - name: is_valid
+            description: Range-check pass for this metric per data_quality.METRIC_RANGES.
+          - name: is_late_arriving
+            description: Sync-event lag exceeded settings.late_arrival_threshold_seconds.
+
+      - name: ehr_conditions
+        identifier: |
+          {%- if target.type == 'duckdb' -%}
+            fixture_silver_ehr_conditions
+          {%- else -%}
+            ehr_conditions
+          {%- endif -%}
+        description: |
+          Cleansed EHR FHIR conditions. ICD-10 coded; one row per condition
+          per patient.
+        loaded_at_field: recorded_at
+        freshness:
+          warn_after: {count: 24, period: hour}
+          error_after: {count: 72, period: hour}
+        columns:
+          - name: condition_id
+            description: Per-condition unique identifier.
+          - name: patient_email
+            description: Patient identifier; primary linkage key.
+          - name: mrn
+            description: Hospital Medical Record Number.
+          - name: icd10_code
+            description: ICD-10-CM diagnosis code.
+          - name: onset_date
+            description: When the condition began.
+          - name: recorded_at
+            description: When the condition was recorded in the EHR.
+          - name: clinical_status
+            description: 'active | resolved | inactive — FHIR clinical-status.'
+          - name: is_primary
+            description: Whether this is the patient's primary condition.
+
+      - name: ehr_medications
+        identifier: |
+          {%- if target.type == 'duckdb' -%}
+            fixture_silver_ehr_medications
+          {%- else -%}
+            ehr_medications
+          {%- endif -%}
+        description: |
+          Cleansed EHR FHIR medication orders. RxNorm coded.
+        loaded_at_field: prescribed_date
+        freshness:
+          warn_after: {count: 24, period: hour}
+          error_after: {count: 72, period: hour}
+        columns:
+          - name: medication_id
+            description: Per-prescription unique identifier.
+          - name: patient_email
+            description: Patient identifier; primary linkage key.
+          - name: mrn
+            description: Hospital Medical Record Number.
+          - name: rxnorm_code
+            description: RxNorm concept identifier.
+          - name: medication_name
+            description: Generic name of the drug.
+          - name: drug_class
+            description: Therapeutic class (e.g., ACE_inhibitor, statin, SSRI).
+          - name: prescribed_date
+            description: When the prescription was written.
+          - name: start_date
+            description: When the patient started taking it.
+          - name: end_date
+            description: When the prescription ended (null if active).
+          - name: daily_dose_mg
+            description: Daily dosage in milligrams.
+
+      - name: pharmacy_fills
+        identifier: |
+          {%- if target.type == 'duckdb' -%}
+            fixture_silver_pharmacy_fills
+          {%- else -%}
+            pharmacy_fills
+          {%- endif -%}
+        description: |
+          Cleansed OpenFDA adverse-event reports as pharmacy fills.
+        loaded_at_field: fda_received_at
+        freshness:
+          warn_after: {count: 48, period: hour}
+          error_after: {count: 168, period: hour}
+        columns:
+          - name: fill_id
+            description: Per-fill unique identifier.
+          - name: report_id
+            description: FDA report identifier (used by identity bridge).
+          - name: patient_email
+            description: Patient identifier when reported by FDA.
+          - name: drug_name
+            description: Drug name as reported.
+          - name: drug_class
+            description: Therapeutic class.
+          - name: fill_quantity
+            description: Number of units dispensed.
+          - name: days_supply
+            description: Days the fill is intended to cover.
+          - name: adverse_event
+            description: 'none | mild | moderate | severe | death — severity enum.'
+          - name: event_timestamp
+            description: When the adverse event occurred (or fill date if no event).
+          - name: fda_received_at
+            description: When FDA received the report.
+          - name: is_valid
+            description: Range-check pass for fill_quantity / days_supply / event severity.
+
+      - name: identity_bridge
+        identifier: |
+          {%- if target.type == 'duckdb' -%}
+            fixture_silver_identity_bridge
+          {%- else -%}
+            identity_bridge
+          {%- endif -%}
+        description: |
+          Identity-resolution bridge. One row per (identifier_type, identifier_value).
+          Resolves every external identifier (email, mrn, device_account_id,
+          fda_report_id) to a single patient_key.
+        loaded_at_field: recorded_at
+        freshness:
+          warn_after: {count: 24, period: hour}
+          error_after: {count: 72, period: hour}
+        columns:
+          - name: identifier_type
+            description: 'email | hospital_mrn | device_account_id | fda_report_id.'
+          - name: identifier_value
+            description: The actual identifier value.
+          - name: patient_key
+            description: SHA-256 of canonical patient_email (lowercased). Null if pending.
+          - name: link_status
+            description: 'linked | pending_registration | pending_email_linkage.'
+          - name: link_method
+            description: How the link was made (ehr_direct, transitive_email, whoop_api_account, pharmacy_email).
+          - name: recorded_at
+            description: When the bridge row was created or last updated.

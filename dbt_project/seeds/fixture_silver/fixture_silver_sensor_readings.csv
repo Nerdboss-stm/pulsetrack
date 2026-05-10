@@ -1,0 +1,16 @@
+reading_id,device_id,device_type,device_account_id,patient_email,metric_name,metric_value,firmware_version,battery_pct,event_timestamp,sync_timestamp,source_type,is_valid,is_late_arriving
+rdg-0000000001,WT-A00-00001,smartwatch,acct_001,alice@example.com,heart_rate_bpm,72,1.0.0,87,2026-05-09 08:00:00,2026-05-09 08:01:00,simulator,true,false
+rdg-0000000001,WT-A00-00001,smartwatch,acct_001,alice@example.com,spo2_pct,98,1.0.0,87,2026-05-09 08:00:00,2026-05-09 08:01:00,simulator,true,false
+rdg-0000000002,WT-A00-00001,smartwatch,acct_001,alice@example.com,heart_rate_bpm,75,1.0.0,86,2026-05-09 09:00:00,2026-05-09 09:01:00,simulator,true,false
+rdg-0000000003,WT-A00-00001,smartwatch,acct_001,alice@example.com,heart_rate_bpm,210,1.0.0,86,2026-05-09 09:30:00,2026-05-09 09:31:00,simulator,false,false
+rdg-0000000004,CS-A01-00002,chest_strap,acct_002,bob@example.com,heart_rate_bpm,68,1.1.0,92,2026-05-09 10:00:00,2026-05-09 10:00:30,whoop_api,true,false
+rdg-0000000005,CS-A01-00002,chest_strap,acct_002,bob@example.com,hrv_ms,42,1.1.0,92,2026-05-09 10:00:00,2026-05-09 10:00:30,whoop_api,true,false
+rdg-0000000006,SR-A02-00003,sleep_ring,acct_003,carol@example.com,sleep_stage,3,2.0.0,75,2026-05-09 02:00:00,2026-05-09 07:00:00,simulator,true,true
+rdg-0000000007,SR-A02-00003,sleep_ring,acct_003,carol@example.com,respiration_rate,15,2.0.0,75,2026-05-09 02:00:00,2026-05-09 07:00:00,simulator,true,true
+rdg-0000000008,WT-A00-00001,smartwatch,acct_001,alice@example.com,heart_rate_bpm,80,1.0.0,82,2026-05-10 08:00:00,2026-05-10 08:01:00,simulator,true,false
+rdg-0000000009,WT-A00-00001,smartwatch,acct_001,alice@example.com,spo2_pct,97,1.0.0,82,2026-05-10 08:00:00,2026-05-10 08:01:00,simulator,true,false
+rdg-0000000010,CS-A01-00002,chest_strap,acct_002,bob@example.com,heart_rate_bpm,72,1.2.0,88,2026-05-10 10:00:00,2026-05-10 10:00:30,whoop_api,true,false
+rdg-0000000011,CS-A01-00002,chest_strap,acct_002,bob@example.com,heart_rate_max_bpm,165,1.2.0,88,2026-05-10 10:00:00,2026-05-10 10:00:30,whoop_api,true,false
+rdg-0000000012,WT-A00-00004,smartwatch,acct_004,dave@example.com,heart_rate_bpm,65,1.0.0,55,2026-05-10 11:00:00,2026-05-10 11:01:00,simulator,true,false
+rdg-0000000013,WT-A00-00004,smartwatch,acct_004,dave@example.com,bp_systolic_mmhg,128,1.0.0,55,2026-05-10 11:05:00,2026-05-10 11:06:00,simulator,true,false
+rdg-0000000014,WT-A00-00004,smartwatch,acct_004,dave@example.com,bp_diastolic_mmhg,82,1.0.0,55,2026-05-10 11:05:00,2026-05-10 11:06:00,simulator,true,false
