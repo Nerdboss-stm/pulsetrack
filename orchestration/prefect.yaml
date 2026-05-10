@@ -1,0 +1,100 @@
+# Prefect 3 project file.
+#
+# Use `prefect deploy` to register deployments from this file. For
+# local agent serving (no Prefect Cloud), use deployments.py with
+# `python -m orchestration.deployments` instead.
+
+name: pulsetrack-orchestration
+prefect-version: ">=3.0,<4.0"
+
+# Build steps run on the Prefect worker before each flow run.
+build: null
+
+# Push steps publish artifacts to the worker. Empty for in-place runs.
+push: null
+
+# Pull steps fetch the flow code on worker startup. Defaults to git
+# clone of this repo's main branch.
+pull:
+  - prefect.deployments.steps.git_clone:
+      repository: https://github.com/your-org/pulsetrack-cm.git
+      branch: cloud-migration
+
+# Deployment templates. Each becomes a deployment in Prefect Cloud
+# after `prefect deploy`.
+deployments:
+  - name: ehr-daily
+    entrypoint: orchestration/flows/daily_ehr_pipeline.py:ehr_daily
+    schedules:
+      - cron: "0 6 * * *"
+        timezone: "UTC"
+    tags: ["batch", "ehr", "daily"]
+    work_pool:
+      name: pulsetrack-pool
+    parameters:
+      aws_env: "dev"
+      fmt: "iceberg"
+
+  - name: pharmacy-daily
+    entrypoint: orchestration/flows/daily_pharmacy_pipeline.py:pharmacy_daily
+    schedules:
+      - cron: "0 7 * * *"
+        timezone: "UTC"
+    tags: ["batch", "pharmacy", "daily"]
+    work_pool:
+      name: pulsetrack-pool
+    parameters:
+      aws_env: "dev"
+      fmt: "iceberg"
+
+  - name: whoop-poll
+    entrypoint: orchestration/flows/whoop_poll_pipeline.py:whoop_poll
+    schedules:
+      - interval: 900   # every 15 minutes
+    tags: ["streaming", "whoop", "poll"]
+    work_pool:
+      name: pulsetrack-pool
+    parameters:
+      lookback_days: 1
+      interval_minutes: 15
+
+  - name: streaming-monitor
+    entrypoint: orchestration/flows/streaming_monitor.py:streaming_monitor
+    schedules:
+      - interval: 300   # every 5 minutes
+    tags: ["monitor", "streaming", "ops"]
+    work_pool:
+      name: pulsetrack-pool
+
+  - name: maintenance-nightly
+    entrypoint: orchestration/flows/maintenance_pipeline.py:maintenance
+    schedules:
+      - cron: "0 2 * * *"
+        timezone: "UTC"
+    tags: ["maintenance", "ops"]
+    work_pool:
+      name: pulsetrack-pool
+    parameters:
+      aws_env: "dev"
+
+  - name: dbt-weekly
+    entrypoint: orchestration/flows/dbt_pipeline.py:dbt_weekly
+    schedules:
+      - cron: "0 10 * * 5"   # Friday 10:00 UTC = WHOOP's deploy day
+        timezone: "UTC"
+    tags: ["dbt", "weekly", "release"]
+    work_pool:
+      name: pulsetrack-pool
+    parameters:
+      target: "dev"
+      run_snapshot: true
+      run_docs: true
+
+  - name: full-refresh
+    entrypoint: orchestration/flows/full_refresh.py:full_refresh
+    tags: ["recovery", "manual", "dangerous"]
+    work_pool:
+      name: pulsetrack-pool
+    # No schedule — manual trigger only.
+    # Parameters required at run time: operator_confirmation must equal
+    # f"YES_REBUILD_{aws_env}" or the flow refuses to proceed.

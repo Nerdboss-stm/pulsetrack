@@ -1,0 +1,20 @@
+# Prefect orchestration requirements.
+#
+# Install via: pip install -r orchestration/requirements.txt
+#
+# Note: these are the orchestration-WORKER-side dependencies. The Prefect
+# worker runs flows by spawning subprocess calls to spark-submit (on EMR),
+# dbt (subprocess), and Python scripts (data_generators). The worker
+# itself doesn't need pyspark, dbt-core, or any of the heavyweight
+# dependencies — those live on the EMR cluster + the warehouse.
+
+prefect>=3.0,<4.0
+boto3>=1.28
+requests>=2.32
+
+# For DBT subprocess invocations from the worker, dbt-core is required
+# if the worker runs dbt itself (vs. delegating to a separate dbt
+# runner pod). Including for completeness.
+dbt-core>=1.7,<1.10
+dbt-duckdb>=1.7,<1.10        # local target
+# dbt-snowflake>=1.7,<1.10    # uncomment when targeting prod Snowflake
