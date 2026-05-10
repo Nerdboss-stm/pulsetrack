@@ -1,0 +1,64 @@
+# Glue Iceberg catalog config — analogous to WHOOP Glacierbase's per-catalog
+# YAML. The CLI loads this file when invoked with ``--catalog glue_iceberg``,
+# uses the ``migrationExecutor.conf`` block to build the SparkSession, and
+# resolves ``{{ .variables.X.Y.Z }}`` references in migration SQL from the
+# ``variables`` block.
+#
+# Env-var substitution: any ``${VAR}`` token in a value is replaced with
+# ``os.environ["VAR"]`` at load time. This lets the same YAML be
+# environment-portable — set LAKEHOUSE_BUCKET/AWS_ENV/etc. per-deployment.
+
+catalog: glue_iceberg
+
+migrationExecutor:
+  type: spark
+  conf:
+    sparkConf:
+      spark.sql.extensions: "io.delta.sql.DeltaSparkSessionExtension,org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions"
+      spark.sql.catalog.spark_catalog: "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+      spark.sql.catalog.glue_iceberg: "org.apache.iceberg.spark.SparkCatalog"
+      spark.sql.catalog.glue_iceberg.catalog-impl: "org.apache.iceberg.aws.glue.GlueCatalog"
+      spark.sql.catalog.glue_iceberg.warehouse: "s3://${LAKEHOUSE_BUCKET}/iceberg/warehouse/"
+      spark.sql.catalog.glue_iceberg.io-impl: "org.apache.iceberg.aws.s3.S3FileIO"
+    # Empty for EMR — Iceberg + Delta jars are baked into the cluster
+    # (see modules/compute/bootstrap.sh). For non-EMR runners, list Maven
+    # coords here.
+    dependencies: []
+
+# Variables resolved by the Go-template-style renderer in migration SQL:
+#   {{ .variables.iceberg.catalog }}                    → glue_iceberg
+#   {{ .variables.glue.database.gold }}                 → pulsetrack_gold_<aws_env>
+#   {{ .variables.silver.bucketSize.sensorReadings }}   → 16
+variables:
+  lakehouse:
+    bucket: "${LAKEHOUSE_BUCKET}"
+  iceberg:
+    catalog: glue_iceberg
+    warehouse: "s3://${LAKEHOUSE_BUCKET}/iceberg/warehouse/"
+  glue:
+    database:
+      bronze: "pulsetrack_bronze_${AWS_ENV}"
+      silver: "pulsetrack_silver_${AWS_ENV}"
+      gold: "pulsetrack_gold_${AWS_ENV}"
+  # Per-table tuning that varies between environments. Bucket size for
+  # patient-keyed facts: 16 in dev, 64 in prod (drives parallelism vs
+  # per-bucket file size).
+  bucket:
+    factVitalReading:
+      patientKey: "${BUCKET_FACT_VITAL_READING:-16}"
+    silverSensor:
+      deviceAccount: "${BUCKET_SILVER_SENSOR_DEVICE_ACCOUNT:-16}"
+
+# State ledger (where applied-migration records live).
+state:
+  table: "glue_iceberg.pulsetrack_gold_${AWS_ENV}.schema_migrations"
+
+# Concurrency lock — DynamoDB conditional-write lock. Prevents two
+# operators or two CI jobs from racing on the same catalog.
+lock:
+  type: dynamodb
+  tableName: "${GLACIERBASE_LOCK_TABLE:-pulsetrack-glacierbase-locks}"
+  region: "${AWS_REGION:-us-east-1}"
+  # TTL on the lock row (seconds). DynamoDB's TTL feature auto-expires
+  # stale locks if the holding process dies without releasing.
+  ttlSeconds: 1800

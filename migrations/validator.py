@@ -6,8 +6,14 @@ unit tests without bringing up Spark. It owns:
 
   * Discovering migration files in ``versions/``.
   * Computing SHA-256 of each forward file.
-  * Substituting ``${ENV_VAR}`` placeholders.
-  * Parsing ``-- depends_on: V001, V002`` directives.
+  * Parsing migration metadata headers:
+      - ``-- MIGRATION_DESCRIPTION: ...`` (WHOOP Glacierbase format)
+      - ``-- MIGRATION_AUTHOR: ...`` (WHOOP Glacierbase format)
+      - ``-- depends_on: V001, V002`` (PulseTrack extension — Glacierbase
+        doesn't have explicit dependency declarations in the public API,
+        but ordering edge cases at scale make this useful)
+  * Rendering Go-template-style ``{{ .variables.X.Y.Z }}`` references from a
+    nested config (loaded from ``catalogs/<name>.yaml``).
   * Topologically sorting the migration set, respecting dependencies.
   * Detecting two unapplied migrations targeting the same table.
 """
@@ -19,14 +25,20 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 # ── Constants ───────────────────────────────────────────────────────────────
 
 # Strict pattern: V<NNN>__<name>.sql, optionally with __down before .sql.
 _FILE_RE = re.compile(r"^V(\d{3,})__([A-Za-z0-9_]+?)(?P<down>__down)?\.sql$")
 
-# Valid env-var references inside SQL: ${VAR}.
-_ENV_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
+# Env-var references in YAML config values: ${VAR} or ${VAR:-default}.
+_ENV_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}")
+
+# Go-template-style variable references in SQL: {{ .variables.path.to.key }}.
+# Matches WHOOP Glacierbase blog post:
+#     bucket({{ .variables.catalog.namespace.tableName.bucketSize }}, id)
+_TEMPLATE_RE = re.compile(r"\{\{\s*\.variables\.([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}")
 
 # Recognized table-touching DDL/DML keywords. Order matters for greedy regex
 # alternation: longest first so e.g. "DELETE FROM" beats "DELETE".
@@ -47,10 +59,18 @@ _TABLE_OP_RE = re.compile(
     """,
 )
 
-# ``-- depends_on: V001, V002`` — case-insensitive, anywhere in leading comments.
+# Header directives — case-insensitive, only on lines that start with ``--``.
 _DEPENDS_RE = re.compile(
     r"^\s*--\s*depends_on\s*:\s*([Vv]\d+(?:\s*,\s*[Vv]\d+)*)\s*$",
     re.MULTILINE,
+)
+_DESCRIPTION_RE = re.compile(
+    r"^\s*--\s*MIGRATION_DESCRIPTION\s*:\s*(.+?)\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+_AUTHOR_RE = re.compile(
+    r"^\s*--\s*MIGRATION_AUTHOR\s*:\s*(.+?)\s*$",
+    re.MULTILINE | re.IGNORECASE,
 )
 
 
@@ -69,6 +89,8 @@ class Migration:
     raw_sql: str
     depends_on: list[str] = field(default_factory=list)
     targets: set[str] = field(default_factory=set)
+    description: str = ""
+    author: str = ""
 
     @property
     def filename(self) -> str:
@@ -98,6 +120,12 @@ def _parse_depends_on(sql: str) -> list[str]:
     return deps
 
 
+def _parse_header(sql: str, regex: re.Pattern[str]) -> str:
+    """Return the first match of a single-value header directive, or empty."""
+    match = regex.search(sql)
+    return match.group(1).strip() if match else ""
+
+
 def _strip_sql_comments(sql: str) -> str:
     """Remove ``--`` line comments and ``/* */`` block comments before scanning."""
     no_block = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
@@ -105,14 +133,35 @@ def _strip_sql_comments(sql: str) -> str:
     return no_line
 
 
+def _normalize_templates_for_target_scan(sql: str) -> str:
+    """Collapse ``{{ .variables.X.Y.Z }}`` to identifier-safe placeholders.
+
+    The table-op regex matches identifier characters; ``{{`` and whitespace
+    inside ``{{ ... }}`` would otherwise split the identifier and the scan
+    would mis-attribute the "target" to the literal ``{{``. Replacing each
+    template reference with ``__TPL_X_Y_Z__`` keeps the identifier
+    contiguous AND deterministic across migrations — two migrations
+    referencing the same Go-template path collapse to the same placeholder,
+    so conflict detection still works.
+    """
+
+    def repl(m: re.Match[str]) -> str:
+        path = m.group(1).replace(".", "_")
+        return f"__TPL_{path}__"
+
+    return _TEMPLATE_RE.sub(repl, sql)
+
+
 def _extract_targets(sql: str) -> set[str]:
     """Best-effort regex scan for tables touched by this migration.
 
     Strips the trailing ``;`` or ``(`` if matched, lowercases for comparison.
-    Env-var placeholders stay in the identifier (they will be the same across
-    migrations, so equality still works for conflict detection).
+    Go-template placeholders are first normalized to ``__TPL_X_Y_Z__`` so
+    they survive the identifier-character regex and stay equal across
+    migrations referencing the same template path.
     """
     cleaned = _strip_sql_comments(sql)
+    cleaned = _normalize_templates_for_target_scan(cleaned)
     targets: set[str] = set()
     for match in _TABLE_OP_RE.finditer(cleaned):
         ident = match.group(2).rstrip(";,()").lower()
@@ -154,6 +203,8 @@ def discover(versions_dir: Path) -> list[Migration]:
             raw_sql=raw,
             depends_on=_parse_depends_on(raw),
             targets=_extract_targets(raw),
+            description=_parse_header(raw, _DESCRIPTION_RE),
+            author=_parse_header(raw, _AUTHOR_RE),
         )
 
     for version, down_path in down_files.items():
@@ -250,20 +301,84 @@ def detect_conflicts(pending: list[Migration]) -> list[tuple[str, str, str]]:
     return conflicts
 
 
-# ── Env-var substitution ────────────────────────────────────────────────────
+# ── Variable rendering (Go-template style, matching WHOOP Glacierbase) ──────
 
 
-def render_sql(sql: str, env: dict[str, str] | None = None) -> str:
-    """Replace ``${VAR}`` with the value from env (or ``os.environ`` if None).
+def render_env_in_str(value: str, env: dict[str, str] | None = None) -> str:
+    """Replace ``${VAR}`` and ``${VAR:-default}`` tokens with env values.
 
-    Raises ``KeyError`` listing every unset variable referenced in the file.
+    Used for YAML config values at load time so the same YAML works across
+    dev/staging/prod by varying environment. ``${VAR:-default}`` falls back
+    to the default if the variable is unset; bare ``${VAR}`` raises if unset.
     """
     source = env if env is not None else dict(os.environ)
-    referenced = {m.group(1) for m in _ENV_RE.finditer(sql)}
-    missing = sorted(v for v in referenced if v not in source)
-    if missing:
-        raise KeyError(f"missing env vars referenced by SQL: {', '.join(missing)}")
-    return _ENV_RE.sub(lambda m: source[m.group(1)], sql)
+
+    def resolve(match: re.Match[str]) -> str:
+        var = match.group(1)
+        default = match.group(2)
+        if var in source:
+            return source[var]
+        if default is not None:
+            return default
+        raise KeyError(f"unset env var referenced in config: ${{{var}}}")
+
+    return _ENV_RE.sub(resolve, value)
+
+
+def render_env_in_obj(obj: Any, env: dict[str, str] | None = None) -> Any:
+    """Recursively render ``${VAR}`` tokens in any string value of a nested dict/list."""
+    if isinstance(obj, str):
+        return render_env_in_str(obj, env)
+    if isinstance(obj, dict):
+        return {k: render_env_in_obj(v, env) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [render_env_in_obj(v, env) for v in obj]
+    return obj
+
+
+def render_template(sql: str, variables: dict[str, Any]) -> str:
+    """Render Go-template-style ``{{ .variables.X.Y.Z }}`` references from
+    a nested ``variables`` dict.
+
+    Mirrors the WHOOP Glacierbase blog post syntax exactly — each token is
+    a dot-separated path into the ``variables`` block of the catalog YAML.
+    Unresolved references raise ``KeyError`` with the full path so the
+    operator sees what's missing.
+    """
+
+    def resolve(match: re.Match[str]) -> str:
+        path = match.group(1).split(".")
+        node: Any = variables
+        for key in path:
+            if not isinstance(node, dict) or key not in node:
+                raise KeyError(
+                    f"unresolved template variable: {{{{ .variables.{'.'.join(path)} }}}}"
+                )
+            node = node[key]
+        return str(node)
+
+    return _TEMPLATE_RE.sub(resolve, sql)
+
+
+def render_sql(
+    sql: str,
+    variables: dict[str, Any] | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
+    """Two-pass renderer: ``{{ .variables.X.Y }}`` first, then ``${VAR}``.
+
+    Migration SQL primarily uses the templated form (matches Glacierbase);
+    ``${VAR}`` is supported as a fallback for cases where a value isn't in
+    the catalog YAML's ``variables`` block (e.g., a one-off env override).
+    """
+    rendered = sql
+    if variables is not None:
+        rendered = render_template(rendered, variables)
+    # ``${VAR}`` second so an env var can override a template if both reference
+    # the same key (rarely useful, but the order is the deterministic choice).
+    if _ENV_RE.search(rendered):
+        rendered = render_env_in_str(rendered, env)
+    return rendered
 
 
 # ── Hash check ──────────────────────────────────────────────────────────────

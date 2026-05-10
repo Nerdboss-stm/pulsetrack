@@ -47,3 +47,8 @@ output "alert_topic_arn" {
   description = "SNS topic for ops alerts"
   value       = module.monitoring.alert_topic_arn
 }
+
+output "glacierbase_lock_table" {
+  description = "DynamoDB table backing the Glacierbase migration concurrency lock"
+  value       = module.iam.glacierbase_lock_table_name
+}

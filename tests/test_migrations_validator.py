@@ -16,7 +16,10 @@ from migrations.validator import (
     Migration,
     detect_conflicts,
     discover,
+    render_env_in_obj,
+    render_env_in_str,
     render_sql,
+    render_template,
     topo_sort,
     verify_hash,
 )
@@ -47,16 +50,126 @@ def _make(version: str, name: str, deps=(), targets=()) -> Migration:
 # ── render_sql ─────────────────────────────────────────────────────────────
 
 
-def test_render_sql_substitutes_known_vars():
+def test_render_sql_env_only_substitutes_known_vars():
     sql = "CREATE TABLE ${CAT}.${DB}.t (x INT)"
-    out = render_sql(sql, {"CAT": "glue", "DB": "gold"})
+    out = render_sql(sql, env={"CAT": "glue", "DB": "gold"})
     assert out == "CREATE TABLE glue.gold.t (x INT)"
 
 
-def test_render_sql_raises_on_missing_vars():
+def test_render_sql_env_only_raises_on_missing_vars():
     with pytest.raises(KeyError) as exc:
-        render_sql("CREATE TABLE ${CAT}.${DB}.t (x INT)", {"CAT": "glue"})
+        render_sql("CREATE TABLE ${CAT}.${DB}.t (x INT)", env={"CAT": "glue"})
     assert "DB" in str(exc.value)
+
+
+# ── render_template (Go-template style, matches WHOOP Glacierbase) ─────────
+
+
+def test_render_template_replaces_simple_path():
+    out = render_template(
+        "SELECT * FROM {{ .variables.iceberg.catalog }}.t",
+        {"iceberg": {"catalog": "glue_iceberg"}},
+    )
+    assert out == "SELECT * FROM glue_iceberg.t"
+
+
+def test_render_template_handles_nested_path():
+    sql = (
+        "{{ .variables.iceberg.catalog }}."
+        "{{ .variables.glue.database.gold }}.fact_x"
+    )
+    variables = {
+        "iceberg": {"catalog": "glue_iceberg"},
+        "glue": {"database": {"gold": "pt_gold_dev"}},
+    }
+    assert render_template(sql, variables) == "glue_iceberg.pt_gold_dev.fact_x"
+
+
+def test_render_template_unresolved_path_raises():
+    with pytest.raises(KeyError, match="unresolved template variable"):
+        render_template("{{ .variables.nope }}", {"other": "x"})
+
+
+def test_render_template_int_value_coerces_to_string():
+    out = render_template(
+        "bucket({{ .variables.bucketSize }}, id)",
+        {"bucketSize": 16},
+    )
+    assert out == "bucket(16, id)"
+
+
+def test_render_sql_template_then_env_fallback():
+    """The combined render_sql does ``{{ .variables.X }}`` first, ``${VAR}`` second."""
+    sql = "{{ .variables.x }}-${ENV_FALLBACK}"
+    out = render_sql(
+        sql, variables={"x": "from_template"}, env={"ENV_FALLBACK": "from_env"}
+    )
+    assert out == "from_template-from_env"
+
+
+# ── render_env_in_str / render_env_in_obj (used by catalog config loader) ──
+
+
+def test_render_env_default_value_when_unset():
+    assert render_env_in_str("${UNSET:-fallback}", {}) == "fallback"
+
+
+def test_render_env_default_value_ignored_when_set():
+    assert render_env_in_str("${X:-fb}", {"X": "real"}) == "real"
+
+
+def test_render_env_unset_without_default_raises():
+    with pytest.raises(KeyError, match="unset env var"):
+        render_env_in_str("${MISSING}", {})
+
+
+def test_render_env_in_obj_recurses_through_nested_structures():
+    cfg = {"top": {"a": "${X}", "b": "literal"}, "list": ["${X}", 42, None]}
+    out = render_env_in_obj(cfg, {"X": "v"})
+    assert out == {"top": {"a": "v", "b": "literal"}, "list": ["v", 42, None]}
+
+
+# ── WHOOP-style migration headers (MIGRATION_DESCRIPTION / MIGRATION_AUTHOR) ─
+
+
+def test_discover_extracts_whoop_headers(tmp_path: Path):
+    _write(
+        tmp_path,
+        "V001__example.sql",
+        """\
+        -- MIGRATION_DESCRIPTION: Add the new Iceberg gold tables
+        -- MIGRATION_AUTHOR: PulseTrack Data Platform
+        -- depends_on:
+        CREATE TABLE foo (id BIGINT) USING iceberg;
+        """,
+    )
+    found = discover(tmp_path)
+    assert len(found) == 1
+    m = found[0]
+    assert m.description == "Add the new Iceberg gold tables"
+    assert m.author == "PulseTrack Data Platform"
+
+
+def test_discover_missing_headers_default_to_empty(tmp_path: Path):
+    _write(tmp_path, "V001__no_headers.sql", "CREATE TABLE foo (id INT);")
+    m = discover(tmp_path)[0]
+    assert m.description == ""
+    assert m.author == ""
+
+
+def test_discover_header_keys_case_insensitive(tmp_path: Path):
+    _write(
+        tmp_path,
+        "V001__case.sql",
+        """\
+        -- migration_description: lowercase variant
+        -- Migration_Author: Mixed Case Author
+        CREATE TABLE foo (id INT);
+        """,
+    )
+    m = discover(tmp_path)[0]
+    assert m.description == "lowercase variant"
+    assert m.author == "Mixed Case Author"
 
 
 # ── verify_hash ────────────────────────────────────────────────────────────

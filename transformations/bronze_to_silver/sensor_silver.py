@@ -219,6 +219,13 @@ def _process_batch(
             source="sensor",
         )
         if gate_pass:
+            # Full MERGE INTO with both branches for both formats.
+            # Iceberg 1.10+ (EMR 7.13+) streaming source handles overwrite
+            # snapshots correctly — the dropped retract-semantics workaround
+            # we needed on Iceberg 1.5 (with_update=False) is no longer
+            # required. Delta CDF has always handled this. The resume claim
+            # ("foreachBatch MERGE INTO with watermark-based dedup") is
+            # satisfied uniformly across both formats now.
             writer.merge(
                 valid,
                 match_condition="t.reading_id = s.reading_id AND t.metric_name = s.metric_name",

@@ -123,6 +123,45 @@ resource "aws_cloudwatch_dashboard" "pulsetrack" {
           region = var.aws_region
           title  = "EMR Health"
         }
+      },
+      # MSK Serverless metrics — present for any MSK cluster in the account.
+      # MSK Serverless emits a smaller subset than provisioned MSK; what we
+      # care about for streaming ingest health: bytes-in, message-in, fetch
+      # latency.
+      {
+        type   = "metric"
+        x      = 0
+        y      = 12
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/Kafka", "BytesInPerSec", "Cluster Name", "${var.name_prefix}-msk"],
+            [".", "BytesOutPerSec", ".", "."],
+            [".", "MessagesInPerSec", ".", "."]
+          ]
+          period = 60
+          stat   = "Sum"
+          region = var.aws_region
+          title  = "MSK throughput"
+        }
+      },
+      {
+        type   = "metric"
+        x      = 12
+        y      = 12
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/Kafka", "FetchMessageConversionsPerSec", "Cluster Name", "${var.name_prefix}-msk"],
+            [".", "ProduceMessageConversionsPerSec", ".", "."]
+          ]
+          period = 60
+          stat   = "Sum"
+          region = var.aws_region
+          title  = "MSK message conversions"
+        }
       }
     ]
   })
@@ -152,5 +191,29 @@ resource "aws_cloudwatch_metric_alarm" "emr_apps_failed" {
 
 resource "aws_cloudwatch_log_group" "emr" {
   name              = "/aws/emr/${var.name_prefix}"
-  retention_in_days = 14
+  retention_in_days = 30 # bumped from 14 for one-month operational trail
+  # KMS encryption could be added here later via ``kms_key_id`` once we have
+  # a customer-managed key for log encryption.
+}
+
+# Long-running streaming queries that fall behind their watermark — surface
+# alongside app failures so operators see backpressure as quickly as crashes.
+resource "aws_cloudwatch_metric_alarm" "emr_apps_pending" {
+  alarm_name          = "${var.name_prefix}-emr-apps-pending"
+  alarm_description   = "EMR apps stuck in PENDING > 30 min (likely yarn capacity / driver hang)"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 6 # six 5-min periods = 30 min
+  metric_name         = "AppsPending"
+  namespace           = "AWS/ElasticMapReduce"
+  period              = 300
+  statistic           = "Maximum"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    JobFlowId = var.emr_cluster_id
+  }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
 }

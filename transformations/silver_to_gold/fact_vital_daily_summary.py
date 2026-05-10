@@ -109,20 +109,22 @@ def _read_silver_batch(spark: SparkSession, fmt: str) -> DataFrame:
 def _read_silver_stream(spark: SparkSession, fmt: str) -> DataFrame:
     """Format-aware streaming read of silver sensor_readings.
 
-    Iceberg note: silver's foreachBatch MERGE produces ``overwrite`` snapshots
-    (not pure appends). Iceberg's streaming source rejects those by default —
-    pass ``streaming-skip-overwrite-snapshots=true`` so this gold streaming
-    query treats MERGE-driven snapshots like append-only deltas. The trade-off
-    is that retract semantics are lost; that's fine because the gold
-    aggregation is idempotent over (patient_key, metric_key, date_key).
+    Iceberg: silver writes via ``MERGE INTO ... WHEN NOT MATCHED THEN
+    INSERT *`` (no UPDATE branch in Iceberg mode — see
+    ``sensor_silver._process_batch``). That produces APPEND-only Iceberg
+    snapshots, which the streaming source reads without
+    ``streaming-skip-overwrite-snapshots``. Watermark-based dedup in silver
+    + cross-batch INSERT-only MERGE is sufficient for the resume claim
+    (foreachBatch MERGE with watermark dedup) without losing retract
+    semantics — there are no retracts because silver doesn't UPDATE rows
+    in Iceberg mode.
+
+    Delta: full MERGE INTO with both branches; Delta CDF handles
+    UPDATE-driven snapshots natively for the streaming gold reader.
     """
     if fmt == "iceberg":
-        return (
-            spark.readStream.format("iceberg")
-            .option("streaming-skip-overwrite-snapshots", "true")
-            .load(
-                f"{settings.iceberg_catalog}.{settings.glue_db_silver}.sensor_readings"
-            )
+        return spark.readStream.format("iceberg").load(
+            f"{settings.iceberg_catalog}.{settings.glue_db_silver}.sensor_readings"
         )
     return (
         spark.readStream.format("delta")

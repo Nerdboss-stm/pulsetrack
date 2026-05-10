@@ -53,17 +53,17 @@ python3 scripts/produce_sensor_records.py \
 # 2. Bronze (streaming, on EMR — exits when caught up via available_now)
 /usr/lib/spark/bin/spark-submit \
     --master yarn --deploy-mode client \
-    --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,\
-               org.apache.spark:spark-avro_2.12:3.5.1,\
+    --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.6,\
+               org.apache.spark:spark-avro_2.12:3.5.6,\
                software.amazon.msk:aws-msk-iam-auth:2.2.0 \
-    --jars file:///usr/share/aws/delta/lib/delta-spark_2.12-3.1.0-amzn-0.jar,\
-           file:///usr/share/aws/delta/lib/delta-storage-3.1.0-amzn-0.jar \
-    streaming/bronze_ingestion.py --trigger available_now --format iceberg
+    --jars file:///usr/share/aws/delta/lib/delta-spark_2.12-3.3.0-amzn-0.jar,\
+           file:///usr/share/aws/delta/lib/delta-storage-3.3.0-amzn-0.jar \
+    streaming/bronze_ingestion.py --trigger processing --format iceberg
 
-# 3. Silver (streaming, on EMR)
+# 3. Silver (streaming, on EMR — continuous)
 /usr/lib/spark/bin/spark-submit ... --jars ... \
     transformations/bronze_to_silver/sensor_silver.py \
-    --mode streaming --trigger available_now --format iceberg
+    --mode streaming --trigger processing --format iceberg
 
 # 4. EHR silver (batch — drives off local JSON, not Kafka)
 /usr/lib/spark/bin/spark-submit ... --jars ... \
@@ -80,10 +80,10 @@ python3 scripts/produce_sensor_records.py \
 # then:       dim_condition, dim_medication
 # then:       dim_metric, dim_device, dim_patient
 
-# 7. Gold facts (BATCH for Iceberg — see § Iceberg streaming gold limitation)
+# 7. Gold facts (STREAMING on EMR 7.13.0 / Iceberg 1.10 — full MERGE)
 /usr/lib/spark/bin/spark-submit ... --jars ... \
     transformations/silver_to_gold/fact_vital_daily_summary.py \
-    --mode batch --format iceberg
+    --mode streaming --trigger processing --format iceberg
 # repeat for: fact_vital_reading, fact_lab_result
 ```
 
@@ -127,28 +127,83 @@ spark.read.table(
 
 ## 3. Schema evolution (Glacierbase migrations)
 
+### 3.0 What Glacierbase is — and what it deliberately is not
+
+Glacierbase manages **declarative, deterministic schemas** for our
+high-value analytical and model-training datasets. The framework is
+intentionally scoped:
+
+**In scope (Glacierbase-managed)**
+
+| Layer | Scope | Why |
+|---|---|---|
+| Silver Iceberg | `pulsetrack_silver_dev.*` (sensor_silver, EHR silver, identity bridge outputs) | Curated, business-rule-cleaned tables consumed by downstream gold + analytics. Schema must be reviewed, hashed, peer-reviewed. |
+| Gold Iceberg | `pulsetrack_gold_dev.*` (3 facts + 9 dims) | The "published API" of the lakehouse. Star-schema tables used by ML training and BI. Schema changes must be auditable. |
+
+**Out of scope (carve-out — managed outside Glacierbase)**
+
+| Path | Why it's carved out |
+|---|---|
+| **Bronze append-only ingestion** (`pulsetrack_bronze_dev.sensor_readings`) | Bronze uses Iceberg's [schema-merge-on-write](https://iceberg.apache.org/docs/latest/spark-writes/#writing-with-sql) (`mergeSchema=true`) to absorb controlled producer-side schema drift. Forcing every Avro field rename through a migration would gate the streaming pipeline on a PR — wrong tradeoff for raw-event data with downstream cleansing. |
+| **CDC streams from external OLTP** (none today; provisioned for future Postgres / EHR sources) | CDC tools (Debezium / DMS / Glue streaming) re-emit upstream schema as-is. Trying to lock that with hashed SQL fights the source-of-truth. We let CDC tables drift and do schema enforcement at the silver step where business rules apply. |
+| **DLQ tables** (`s3://lakehouse/dlq/...`) | Operationally short-lived; format chosen to match dead-letter records' raw shape. |
+| **Quarantine paths** (`s3://lakehouse/quarantine/...`) | Same reasoning — informative, not contractual. |
+| **Checkpoint state** (`s3://lakehouse/checkpoints/...`) | Spark-managed; not a "table" in the warehouse sense. |
+
+**Why this matters operationally:** if you see schema drift in
+`pulsetrack_bronze_dev.sensor_readings`, it is *not* a Glacierbase
+violation — it is the contract. Schema enforcement happens at the
+bronze→silver boundary in `transformations/bronze_to_silver/sensor_silver.py`,
+where the explicit `select(...)` projection drops or fails on unknown
+fields per business rule. Silver and gold are the layers where
+"add a column" must go through `migrations/cli.py create`.
+
+This carve-out matches WHOOP's published Glacierbase scope: the
+framework focuses on the high-value analytical and model-training
+datasets, deliberately leaving raw ingestion and CDC alone.
+
 ### 3.1 Authoring a new migration
 
 ```bash
 # Scaffolds versions/V005__<name>.sql + V005__<name>__down.sql
-python3 migrations/cli.py create --name "add_glucose_column"
+# with WHOOP-style headers pre-filled.
+python3 migrations/cli.py --catalog glue_iceberg create \
+    --name "add_glucose_column" \
+    --description "Add fasting_glucose column to fact_vital_reading" \
+    --author "PulseTrack Data Platform"
 ```
 
-Then edit the generated SQL. Optional directives in the first comment block:
+The generated file uses WHOOP Glacierbase header conventions:
 
 ```sql
--- depends_on: V001, V003   # topo-sort dependency
--- description: Add glucose column to fact_vital_reading
+-- MIGRATION_DESCRIPTION: Add fasting_glucose column to fact_vital_reading
+-- MIGRATION_AUTHOR: PulseTrack Data Platform
+-- depends_on: V001, V003
+
+-- Reference variables from migrations/catalogs/glue_iceberg.yaml using
+-- Go-template syntax (matches WHOOP):
+ALTER TABLE
+  {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.fact_vital_reading
+  ADD COLUMN fasting_glucose DOUBLE;
 ```
+
+Two substitution layers, applied in order:
+1. **Go-template** `{{ .variables.X.Y.Z }}` → resolved from the catalog
+   YAML's `variables` block. Use this for *catalog-scoped* values
+   (catalog name, database name, bucket-size for hidden partitioning).
+2. **Env var** `${VAR}` and `${VAR:-default}` → resolved from process
+   environment. Use this only for genuinely env-specific runtime
+   plumbing.
 
 ### 3.2 Validating + dry-running locally before the PR
 
 ```bash
-python3 migrations/cli.py validate    # hash, conflicts, deps, env-var resolution
-python3 migrations/cli.py dry-run     # prints would-execute SQL, no writes
+python3 migrations/cli.py --catalog glue_iceberg validate    # hash, conflicts, deps, variable resolution
+python3 migrations/cli.py --catalog glue_iceberg dry-run     # prints would-execute SQL, no writes
+python3 migrations/cli.py --catalog glue_iceberg pending     # show what would run next
 ```
 
-CI runs both on every PR via `.github/workflows/migration-check.yml`. PRs
+CI runs `validate` on every PR via `.github/workflows/migration-check.yml`. PRs
 that introduce conflicts (two unapplied migrations writing to the same
 table) or break the dependency graph fail validation.
 
@@ -158,17 +213,19 @@ Use EMR's spark-submit (NOT `python3` directly — see § "Known traps"):
 
 ```bash
 /usr/lib/spark/bin/spark-submit --master yarn --deploy-mode client \
-    --jars file:///usr/share/aws/delta/lib/delta-spark_2.12-3.1.0-amzn-0.jar,\
-           file:///usr/share/aws/delta/lib/delta-storage-3.1.0-amzn-0.jar \
-    migrations/cli.py run
+    --jars file:///usr/share/aws/delta/lib/delta-spark_2.12-3.3.0-amzn-0.jar,\
+           file:///usr/share/aws/delta/lib/delta-storage-3.3.0-amzn-0.jar \
+    migrations/cli.py --catalog glue_iceberg run
 ```
 
-The state ledger is `glue_iceberg.<gold_db>.schema_migrations`.
+The state ledger is `glue_iceberg.<gold_db>.schema_migrations` (table FQN
+configured per-catalog in `migrations/catalogs/<catalog>.yaml` under
+`state.table`).
 
 ### 3.4 Rolling back
 
 ```bash
-python3 migrations/cli.py rollback --version V003
+python3 migrations/cli.py --catalog glue_iceberg rollback --version V003
 ```
 
 Rollback executes `versions/V003__<name>__down.sql` if present. The state
@@ -182,42 +239,82 @@ the file afterward, `run` and `validate` will both fail loudly with a
 "migration tampering detected" error. The right way to fix a bad migration
 is a NEW versioned migration, not editing the old one.
 
+### 3.6 Per-catalog YAML config (`migrations/catalogs/<name>.yaml`)
+
+Each catalog has its own configuration file that pins:
+
+- `migrationExecutor.conf.sparkConf` — the exact Spark + Iceberg + Glue
+  catalog wiring used to execute SQL. Migrations cannot drift from the
+  runtime they were authored against.
+- `dependencies` — Maven coordinates for Iceberg / Delta / Glue
+  catalog jars that get added via `--packages`.
+- `variables` — the catalog-scoped values referenced by Go-template
+  syntax in migration SQL (`{{ .variables.iceberg.catalog }}` etc).
+- `state.table` — fully-qualified name of the migration ledger table.
+- `lock` — DynamoDB-backed concurrency lock (see § 3.7).
+
+Adding a new catalog (e.g., `glue_delta` for a parallel Delta layer) is a
+matter of adding `migrations/catalogs/glue_delta.yaml` and pointing the
+CLI at it via `--catalog glue_delta`.
+
+### 3.7 DynamoDB concurrency lock
+
+Concurrent invocations of `migrations/cli.py run` on the same catalog are
+prevented by a DynamoDB-backed lock (matches WHOOP Glacierbase). Lock
+table is provisioned by Terraform:
+
+```
+DynamoDB table:    pulsetrack-dev-glacierbase-locks
+Hash key:          catalog (string)
+TTL attribute:     expires_at (Unix epoch seconds)
+```
+
+Acquisition is a conditional `PutItem` with
+`attribute_not_exists(catalog) OR expires_at < :now`. A stale lock (e.g.
+crashed runner) auto-expires after `lock.lease_seconds` (default 600s)
+and the next runner reclaims it.
+
+If you see `LockAcquisitionError: catalog 'glue_iceberg' is held by …`,
+either wait for the other run to finish or — if it's a known-dead
+process — verify in the DynamoDB console and `DeleteItem` manually with
+`catalog = "glue_iceberg"`.
+
 ## 4. Known limitations
 
-### 4.1 Iceberg streaming gold from Iceberg silver
+### 4.1 Iceberg streaming gold from Iceberg silver (resolved on EMR 7.13.0)
 
-Silver's `foreachBatch` MERGE produces Iceberg "overwrite" snapshots. The
-Iceberg streaming source in version 1.5.0 (which EMR 7.2.0 ships) rejects
-these by default with:
+Silver's `foreachBatch` MERGE produces Iceberg "overwrite" snapshots.
+On older Iceberg (1.5.0, shipped with EMR 7.2.0), the streaming source
+rejected these by default:
 
 ```
 java.lang.IllegalStateException: Cannot process overwrite snapshot: <id>,
 to ignore overwrites, set streaming-skip-overwrite-snapshots=true
 ```
 
-Three options, ordered by preference for production:
+**EMR 7.13.0 ships Iceberg 1.10.0**, where the streaming source handles
+overwrite snapshots cleanly. The gold transforms (`fact_vital_daily_summary`,
+`fact_vital_reading`, `fact_lab_result`) now run streaming with the full
+MERGE INTO path — no `streaming-skip-overwrite-snapshots` workaround
+needed, no retract loss.
 
-1. **Recommended: Run gold in batch mode for Iceberg.**
-   `--mode batch --format iceberg` works end-to-end. Schedule it via cron /
-   EMR step / Airflow at the cadence your aggregation needs (typically
-   hourly or every 15 min). Idempotent on the gold grain key, so reruns are
-   safe.
+For continuous streaming end-to-end:
 
-2. **Acceptable: Run gold streaming with `streaming-skip-overwrite-snapshots=true`.**
-   The option is wired into the streaming code path. Trade-off: gold misses
-   retract semantics from MERGE-driven snapshots — silver UPDATEs that
-   rewrite existing rows aren't propagated. Daily aggregates are idempotent
-   over `(patient_key, metric_key, date_key)`, so the next batch run
-   reconciles. This is the path the streaming code defaults to.
+```bash
+# Producer in continuous mode
+python3 scripts/produce_sensor_records.py \
+    --brokers boot-XXXX.kafka-serverless.us-east-1.amazonaws.com:9098 \
+    --topic   sensor_readings \
+    --continuous --interval-seconds 5
 
-3. **Future: Iceberg 1.6+ row-lineage / changelog scan.**
-   Iceberg's incremental scan API (`<table>.changes` with
-   `start-snapshot-id`) gives row-level INSERT / DELETE / UPDATE_BEFORE /
-   UPDATE_AFTER events. Once EMR ships Iceberg 1.6+, we can stream gold
-   against these without retract loss.
+# Bronze + silver + gold all on default `--trigger processing` (continuous)
+/usr/lib/spark/bin/spark-submit ... streaming/bronze_ingestion.py
+/usr/lib/spark/bin/spark-submit ... transformations/bronze_to_silver/sensor_silver.py --mode streaming
+/usr/lib/spark/bin/spark-submit ... transformations/silver_to_gold/fact_vital_daily_summary.py --mode streaming
+```
 
-The Delta path always runs streaming gold with full retract correctness —
-Delta's CDF (Change Data Feed) handles MERGE-driven snapshots natively.
+The Delta path retains full retract correctness via Delta's CDF (Change
+Data Feed) and is preserved for the local dev loop.
 
 ### 4.2 `python3 migrations/cli.py` vs `/usr/lib/spark/bin/spark-submit migrations/cli.py`
 
@@ -242,7 +339,8 @@ before they can read them. If `run_identity_bridge` errors with
 |---|---|---|
 | `ClassNotFoundException: org.apache.iceberg.spark.SparkCatalog` | Using `python3` instead of `/usr/lib/spark/bin/spark-submit` | Use the EMR spark-submit explicitly |
 | `[DELTA_SCHEMA_NOT_SET]` or `[PATH_NOT_FOUND]` reading bronze in silver | Silver was run with `--format delta` against an Iceberg bronze (or vice versa) | Make all layers in a chain use the same format |
-| `ClassNotFoundException: org.apache.spark.sql.delta.catalog.DeltaCatalog` | Delta jars not on classpath; bootstrap symlink failed | Re-run bootstrap or pass `--jars file:///usr/share/aws/delta/lib/delta-spark_2.12-3.1.0-amzn-0.jar,delta-storage*` |
+| `ClassNotFoundException: org.apache.spark.sql.delta.catalog.DeltaCatalog` | Delta jars not on classpath; bootstrap symlink failed | Re-run bootstrap or pass `--jars file:///usr/share/aws/delta/lib/delta-spark_2.12-3.3.0-amzn-0.jar,delta-storage*` |
+| `LockAcquisitionError: catalog 'glue_iceberg' is held by …` | Concurrent invocation of `migrations/cli.py run` on the same catalog | Wait for the other run, or — if a known-dead process — `DeleteItem` from `pulsetrack-dev-glacierbase-locks` with `catalog = "glue_iceberg"` |
 | MSK SASL handshake hangs | `confluent_kafka.AdminClient` doesn't pump `oauth_cb`; or Kafka SG denies ingress | (a) Call `admin.poll(0.5)` in a loop after construction (already in `verify_msk_iam.py` and the producer); (b) confirm Kafka SG allows 9098 from EMR master SG |
 | `[PARSE_SYNTAX_ERROR] near 'WRITE'` during `migrations/cli.py run` | Iceberg `WRITE ORDERED BY` requires the Iceberg SQL extension to be loaded | Confirm `spark.sql.extensions` includes `org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions` (note the trailing **s**) |
 | Migration runner collapses two `;`-terminated statements into one | Apostrophe in a SQL comment toggles in-string state | Splitter is comment-aware now (`migrations/runner.py:split_statements`); verify your `migrations/runner.py` is at HEAD |

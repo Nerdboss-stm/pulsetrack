@@ -1,3 +1,5 @@
+-- MIGRATION_DESCRIPTION: Add silver pharmacy_fills and gold fact_pharmacy_fill Iceberg tables
+-- MIGRATION_AUTHOR: PulseTrack Data Platform
 -- depends_on: V001
 -- V003: Add Silver pharmacy_fills + Gold fact_pharmacy_fill.
 -- ----------------------------------------------------------------------------
@@ -6,7 +8,7 @@
 -- joined on dim_medication.medication_key + dim_date.date_key.
 -- ----------------------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS ${ICEBERG_CATALOG}.${GLUE_DATABASE_SILVER}.pharmacy_fills (
+CREATE TABLE IF NOT EXISTS {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.silver }}.pharmacy_fills (
     event_id             STRING,
     event_type           STRING,
     patient_id           STRING,
@@ -28,7 +30,7 @@ TBLPROPERTIES (
     'format-version'='2'
 );
 
-CREATE TABLE IF NOT EXISTS ${ICEBERG_CATALOG}.${GLUE_DATABASE_GOLD}.fact_pharmacy_fill (
+CREATE TABLE IF NOT EXISTS {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.fact_pharmacy_fill (
     patient_key      BIGINT,
     medication_key   BIGINT,
     date_key         INT,
@@ -46,5 +48,5 @@ TBLPROPERTIES (
     'format-version'='2'
 );
 
-ALTER TABLE ${ICEBERG_CATALOG}.${GLUE_DATABASE_GOLD}.fact_pharmacy_fill
+ALTER TABLE {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.fact_pharmacy_fill
     WRITE ORDERED BY (patient_key, medication_key, date_key);

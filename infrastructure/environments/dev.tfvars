@@ -1,7 +1,7 @@
 # Dev environment — small instances, spot pricing, aggressive auto-terminate.
 environment = "dev"
 
-emr_release_label        = "emr-7.2.0"
+emr_release_label        = "emr-7.13.0"
 emr_master_instance_type = "m5.xlarge"
 emr_core_instance_type   = "m5.xlarge"
 emr_core_instance_count  = 2

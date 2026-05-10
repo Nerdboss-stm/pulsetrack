@@ -99,15 +99,25 @@ def split_statements(sql: str) -> list[str]:
 
 
 class MigrationRunner:
-    """Executes a single migration's SQL through Spark."""
+    """Executes a single migration's SQL through Spark.
+
+    The runner is configured with two separate template sources:
+      * ``variables`` — the catalog YAML's ``variables`` block, used for
+        ``{{ .variables.X.Y.Z }}`` Go-template references in SQL. This is
+        the primary mechanism (matches WHOOP Glacierbase).
+      * ``env`` — environment variables, used for ``${VAR}`` fallback
+        references. Kept for ad-hoc overrides.
+    """
 
     def __init__(
         self,
         spark: "SparkSession",
+        variables: dict[str, object] | None = None,
         env: dict[str, str] | None = None,
         dry_run: bool = False,
     ) -> None:
         self.spark = spark
+        self.variables = variables
         self.env = env
         self.dry_run = dry_run
 
@@ -129,7 +139,7 @@ class MigrationRunner:
     # ── Internals ─────────────────────────────────────────────────────
 
     def _execute(self, raw_sql: str, label: str) -> int:
-        rendered = render_sql(raw_sql, self.env)
+        rendered = render_sql(raw_sql, variables=self.variables, env=self.env)
         statements = split_statements(rendered)
         start = time.perf_counter()
         for stmt in statements:

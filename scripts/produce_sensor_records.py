@@ -151,7 +151,32 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--brokers", required=True)
     parser.add_argument("--topic", default="sensor_readings")
-    parser.add_argument("--count", type=int, default=200)
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=200,
+        help=(
+            "Total records when --mode=once. In --mode=continuous, the count "
+            "per cycle (the producer cycles forever)."
+        ),
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["once", "continuous"],
+        default="once",
+        help=(
+            "once: emit COUNT records and exit (the original behavior). "
+            "continuous: emit COUNT records per cycle, sleep INTERVAL, repeat. "
+            "Use continuous to keep the streaming bronze->silver->gold "
+            "queries fed for an end-to-end live demo."
+        ),
+    )
+    parser.add_argument(
+        "--interval-seconds",
+        type=float,
+        default=10.0,
+        help="Sleep between cycles in --mode=continuous.",
+    )
     args = parser.parse_args()
 
     schema = fastavro.schema.load_schema(str(SCHEMA_FILE))
@@ -159,48 +184,68 @@ def main() -> None:
 
     print(f"[producer] brokers={args.brokers}", flush=True)
     print(f"[producer] topic={args.topic}", flush=True)
-    print(f"[producer] count={args.count}", flush=True)
-
-    ensure_topic(args.brokers, args.topic)
-
-    producer = Producer(base_config(args.brokers))
-    base_ts = datetime.now(timezone.utc)
-
-    delivered = 0
-    failed = 0
-
-    def cb(err, msg):
-        nonlocal delivered, failed
-        if err:
-            failed += 1
-            print(f"[producer] DELIVERY FAILED: {err}", file=sys.stderr, flush=True)
-        else:
-            delivered += 1
-
-    for seq in range(args.count):
-        rec = make_record(seq, base_ts)
-        payload = encode_avro(rec, parsed_schema)
-        producer.produce(
-            args.topic,
-            key=rec["user_device_account_id"].encode(),
-            value=payload,
-            callback=cb,
-        )
-        # Pump the queue periodically so oauth_cb fires + memory stays bounded.
-        if seq % 50 == 0:
-            producer.poll(0)
-
-    remaining = producer.flush(60)
-    if remaining > 0:
-        raise RuntimeError(f"producer.flush left {remaining} unsent")
-
     print(
-        f"[producer] DONE — delivered={delivered} failed={failed} "
-        f"(total submitted={args.count})",
+        f"[producer] mode={args.mode} count={args.count} "
+        f"interval={args.interval_seconds}s",
         flush=True,
     )
-    if failed:
-        sys.exit(1)
+
+    ensure_topic(args.brokers, args.topic)
+    producer = Producer(base_config(args.brokers))
+
+    cycle = 0
+    while True:
+        cycle += 1
+        # Each cycle uses a new ``base_ts`` so timestamps fan out correctly.
+        # ``seq_offset`` keeps reading_id uniqueness across cycles (uuid4
+        # already handles this, but using the offset for the user/device
+        # spread keeps the per-cycle data shape varied across cycles too).
+        seq_offset = (cycle - 1) * args.count
+        base_ts = datetime.now(timezone.utc)
+
+        delivered = 0
+        failed = 0
+
+        def cb(err, msg):
+            nonlocal delivered, failed
+            if err:
+                failed += 1
+                print(
+                    f"[producer] DELIVERY FAILED: {err}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:
+                delivered += 1
+
+        for offset in range(args.count):
+            seq = seq_offset + offset
+            rec = make_record(seq, base_ts)
+            payload = encode_avro(rec, parsed_schema)
+            producer.produce(
+                args.topic,
+                key=rec["user_device_account_id"].encode(),
+                value=payload,
+                callback=cb,
+            )
+            # Pump the queue periodically so oauth_cb fires + memory stays bounded.
+            if offset % 50 == 0:
+                producer.poll(0)
+
+        remaining = producer.flush(60)
+        if remaining > 0:
+            raise RuntimeError(f"producer.flush left {remaining} unsent")
+
+        print(
+            f"[producer] cycle={cycle} delivered={delivered} failed={failed} "
+            f"(submitted={args.count}, total_delivered={cycle * args.count - failed})",
+            flush=True,
+        )
+        if failed:
+            sys.exit(1)
+        if args.mode == "once":
+            break
+        time.sleep(args.interval_seconds)
 
 
 if __name__ == "__main__":

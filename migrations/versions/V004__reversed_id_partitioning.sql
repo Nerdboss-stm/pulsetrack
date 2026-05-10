@@ -1,3 +1,5 @@
+-- MIGRATION_DESCRIPTION: Evolve fact_vital_reading partitioning to bucket(patient_key) first (Glacierbase reversed-ID trick)
+-- MIGRATION_AUTHOR: PulseTrack Data Platform
 -- depends_on: V001
 -- V004: Reversed-ID partitioning on fact_vital_reading.
 -- ----------------------------------------------------------------------------
@@ -12,11 +14,11 @@
 -- both at read time.
 -- ----------------------------------------------------------------------------
 
-ALTER TABLE ${ICEBERG_CATALOG}.${GLUE_DATABASE_GOLD}.fact_vital_reading
+ALTER TABLE {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.fact_vital_reading
     DROP PARTITION FIELD days(event_timestamp);
 
-ALTER TABLE ${ICEBERG_CATALOG}.${GLUE_DATABASE_GOLD}.fact_vital_reading
+ALTER TABLE {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.fact_vital_reading
     ADD PARTITION FIELD bucket(16, patient_key);
 
-ALTER TABLE ${ICEBERG_CATALOG}.${GLUE_DATABASE_GOLD}.fact_vital_reading
+ALTER TABLE {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.fact_vital_reading
     ADD PARTITION FIELD days(event_timestamp);

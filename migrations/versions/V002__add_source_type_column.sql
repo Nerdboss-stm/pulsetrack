@@ -1,3 +1,5 @@
+-- MIGRATION_DESCRIPTION: Add source_type column to fact_vital_daily_summary and fact_lab_result
+-- MIGRATION_AUTHOR: PulseTrack Data Platform
 -- depends_on: V001
 -- V002: Add source_type to remaining fact tables.
 -- ----------------------------------------------------------------------------
@@ -7,8 +9,8 @@
 -- downstream BI can split simulator vs real-device aggregates.
 -- ----------------------------------------------------------------------------
 
-ALTER TABLE ${ICEBERG_CATALOG}.${GLUE_DATABASE_GOLD}.fact_vital_daily_summary
+ALTER TABLE {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.fact_vital_daily_summary
     ADD COLUMN source_type STRING;
 
-ALTER TABLE ${ICEBERG_CATALOG}.${GLUE_DATABASE_GOLD}.fact_lab_result
+ALTER TABLE {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.fact_lab_result
     ADD COLUMN source_type STRING;

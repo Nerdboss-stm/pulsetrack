@@ -16,10 +16,14 @@ from pyspark.sql import SparkSession
 
 from config import settings
 
+# Spark connector versions tracked alongside the runtime Spark version.
+# Local dev: pinned to the latest 3.5.x line so the local pipeline stays
+# close to what EMR ships (Spark 3.5.6 in emr-7.13.0, Hadoop 3.4.2).
+# Cluster-side spark-submit ``--packages`` invocations should match these.
 LOCAL_PACKAGES = [
-    "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3",
-    "org.apache.spark:spark-avro_2.12:3.5.3",
-    "org.apache.hadoop:hadoop-azure:3.3.4",
+    "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.6",
+    "org.apache.spark:spark-avro_2.12:3.5.6",
+    "org.apache.hadoop:hadoop-azure:3.4.2",
 ]
 
 DELTA_EXTENSION = "io.delta.sql.DeltaSparkSessionExtension"

@@ -211,13 +211,13 @@ def run_streaming(
         },
     )
 
+    # Silver produces APPEND-only Iceberg snapshots (INSERT-only MERGE in
+    # ``sensor_silver._process_batch``); reads cleanly without
+    # streaming-skip-overwrite-snapshots. See § "Known limitations" in
+    # docs/PRODUCTION_RUNBOOK.md for the why.
     if fmt == "iceberg":
-        silver_stream = (
-            spark.readStream.format("iceberg")
-            .option("streaming-skip-overwrite-snapshots", "true")
-            .load(
-                f"{settings.iceberg_catalog}.{settings.glue_db_silver}.sensor_readings"
-            )
+        silver_stream = spark.readStream.format("iceberg").load(
+            f"{settings.iceberg_catalog}.{settings.glue_db_silver}.sensor_readings"
         )
     else:
         silver_stream = (

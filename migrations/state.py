@@ -1,13 +1,16 @@
 """
 Migration state — read/write the ``schema_migrations`` ledger.
 
-State backend is chosen by env at runtime:
+The state table location is configured per-catalog in the YAML config
+(``state.table`` in ``migrations/catalogs/<name>.yaml``) and passed in
+from the CLI. Two flavors:
 
-  * ``ICEBERG_CATALOG`` set  -> Iceberg table at
-    ``<ICEBERG_CATALOG>.<GLUE_DATABASE_GOLD>.schema_migrations``.
-  * Otherwise                 -> Delta table at
-    ``<LAKEHOUSE_BUCKET>/_migrations/schema_migrations`` (or local path
-    if no ``s3://`` scheme on the bucket).
+  * Fully-qualified Iceberg name (``catalog.db.schema_migrations``) — used
+    when the YAML's ``state.table`` contains dots. This is the production
+    path on EMR.
+  * Bare path (``s3://bucket/_migrations/schema_migrations``, or a local
+    path) — Delta backend. Useful for local dev without an Iceberg catalog
+    wired up.
 
 The CLI bootstraps the SparkSession and hands it in. This module never
 constructs Spark itself.
@@ -61,25 +64,23 @@ class AppliedMigration:
 # ── Backend selection ───────────────────────────────────────────────────────
 
 
-def _is_iceberg() -> bool:
-    return bool(os.environ.get("ICEBERG_CATALOG"))
+def _classify_state_table(state_table: str) -> tuple[bool, str | None, str | None]:
+    """Decide whether ``state_table`` names an Iceberg table or a Delta path.
 
+    Heuristic: if it contains dots (``catalog.db.table``) and no ``s3://``
+    scheme, treat it as an Iceberg fully-qualified name. Otherwise, treat
+    it as a path for the Delta backend.
 
-def _iceberg_table() -> str:
-    catalog = os.environ["ICEBERG_CATALOG"]
-    db = os.environ["GLUE_DATABASE_GOLD"]
-    return f"{catalog}.{db}.schema_migrations"
-
-
-def _delta_path() -> str:
-    bucket = os.environ.get("LAKEHOUSE_BUCKET", "")
-    if bucket.startswith("s3://"):
-        return f"{bucket.rstrip('/')}/_migrations/schema_migrations"
-    if bucket:
-        # Treat plain bucket names as s3:// (matches AWS workflow env style).
-        return f"s3://{bucket}/_migrations/schema_migrations"
-    # Last-resort local fallback for dry runs without any cloud config.
-    return "/tmp/pulsetrack-migrations/schema_migrations"  # nosec B108
+    Returns ``(is_iceberg, iceberg_fqn, delta_path)`` — exactly one of the
+    last two is set.
+    """
+    if "://" not in state_table and state_table.count(".") >= 2:
+        return True, state_table, None
+    if state_table.startswith("s3://") or state_table.startswith("/"):
+        return False, None, state_table
+    if state_table:
+        return False, None, f"s3://{state_table}"
+    return False, None, "/tmp/pulsetrack-migrations/schema_migrations"  # nosec B108
 
 
 # ── Public API ──────────────────────────────────────────────────────────────
@@ -90,15 +91,49 @@ class MigrationState:
 
     All methods are no-ops in ``dry_run=True`` mode — they read from the
     ledger if it exists but never write.
+
+    Args:
+        spark: SparkSession.
+        state_table: Either an Iceberg FQN (``catalog.db.schema_migrations``)
+            or a Delta path (``s3://...`` or local). When ``None`` (legacy
+            path), falls back to ``ICEBERG_CATALOG`` / ``GLUE_DATABASE_GOLD``
+            / ``LAKEHOUSE_BUCKET`` env vars for backwards compat with the
+            pre-catalog-config CLI.
+        dry_run: If true, all writes become no-ops.
     """
 
-    def __init__(self, spark: "SparkSession", dry_run: bool = False) -> None:
+    def __init__(
+        self,
+        spark: "SparkSession",
+        state_table: str | None = None,
+        dry_run: bool = False,
+    ) -> None:
         self.spark = spark
         self.dry_run = dry_run
-        self._table_ref = (
-            _iceberg_table() if _is_iceberg() else None
-        )  # set when iceberg, else None
-        self._delta_path = None if _is_iceberg() else _delta_path()
+        if state_table is not None:
+            self._is_iceberg, self._table_ref, self._delta_path = _classify_state_table(
+                state_table
+            )
+        else:
+            # Backwards compat: derive from env vars (legacy pre-Glacierbase mode).
+            if os.environ.get("ICEBERG_CATALOG"):
+                self._is_iceberg = True
+                self._table_ref = (
+                    f"{os.environ['ICEBERG_CATALOG']}."
+                    f"{os.environ['GLUE_DATABASE_GOLD']}."
+                    f"schema_migrations"
+                )
+                self._delta_path = None
+            else:
+                bucket = os.environ.get("LAKEHOUSE_BUCKET", "")
+                self._is_iceberg = False
+                self._table_ref = None
+                if bucket.startswith("s3://"):
+                    self._delta_path = f"{bucket.rstrip('/')}/_migrations/schema_migrations"
+                elif bucket:
+                    self._delta_path = f"s3://{bucket}/_migrations/schema_migrations"
+                else:
+                    self._delta_path = "/tmp/pulsetrack-migrations/schema_migrations"  # nosec B108
 
     # ── Initialisation ─────────────────────────────────────────────────
 
@@ -106,7 +141,7 @@ class MigrationState:
         """Create the ledger if it does not yet exist. Idempotent."""
         if self.dry_run:
             return
-        if _is_iceberg():
+        if self._is_iceberg:
             self.spark.sql(
                 f"CREATE TABLE IF NOT EXISTS {self._table_ref} ({_DDL_COLUMNS}) "
                 "USING iceberg "
@@ -152,7 +187,7 @@ class MigrationState:
         return {v: m for v, m in applied.items() if m.rolled_back_at is None}
 
     def _read_table(self):
-        if _is_iceberg():
+        if self._is_iceberg:
             try:
                 return self.spark.table(self._table_ref)
             except Exception:
@@ -177,7 +212,7 @@ class MigrationState:
             return
         applied_by = applied_by or os.environ.get("USER", "unknown")
         applied_at = datetime.utcnow()
-        if _is_iceberg():
+        if self._is_iceberg:
             self.spark.sql(
                 f"INSERT INTO {self._table_ref} VALUES ("
                 f"'{_sql_lit(version)}', "
@@ -208,7 +243,7 @@ class MigrationState:
         rolled_at = datetime.utcnow()
         target = (
             self._table_ref
-            if _is_iceberg()
+            if self._is_iceberg
             else f"delta.`{self._delta_path}`"
         )
         self.spark.sql(
@@ -222,7 +257,7 @@ class MigrationState:
 
     @property
     def location(self) -> str:
-        return self._table_ref if _is_iceberg() else f"delta:{self._delta_path}"
+        return self._table_ref if self._is_iceberg else f"delta:{self._delta_path}"
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────

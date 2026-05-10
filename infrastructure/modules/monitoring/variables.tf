@@ -32,3 +32,9 @@ variable "lakehouse_bucket" {
   description = "S3 bucket name for dashboard widgets"
   type        = string
 }
+
+variable "msk_cluster_arn" {
+  description = "MSK Serverless cluster ARN for dashboard widgets"
+  type        = string
+  default     = ""
+}

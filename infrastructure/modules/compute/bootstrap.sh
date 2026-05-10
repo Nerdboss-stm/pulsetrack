@@ -20,17 +20,35 @@ fi
 #     SPARK_HOME unset and stripping EMR's jar discovery. We use the EMR-bundled
 #     pyspark on the cluster nodes; the Python `delta` package is just the
 #     thin wrapper around the JVM jars (which we install separately below).
-sudo pip3 install --ignore-installed \
-    pydantic==2.9.0 \
-    pydantic-settings==2.6.0 \
-    great-expectations==1.2.0 \
-    prometheus-client==0.21.0 \
-    confluent-kafka==2.6.0 \
-    fastavro==1.9.5 \
-    requests==2.32.0 \
-    fhir.resources==7.1.0 \
-    aws-msk-iam-sasl-signer-python==1.0.2
-sudo pip3 install --no-deps delta-spark==3.0.0
+# Pinned to latest stable as of EMR 7.13.0 / Spark 3.5.6 (May 2026).
+# Versions chosen for compatibility with the EMR-bundled Spark/Hadoop/Iceberg
+# build — bumping any one line should be paired with a re-run of the unit
+# tests in ``tests/`` and a smoke test against the cluster.
+# EMR 7.13 ships Python 3.11 alongside 3.9; ``spark-submit`` defaults to
+# 3.11 (PYSPARK_PYTHON in /usr/lib/spark/conf/spark-env.sh). Install all
+# Python deps under 3.11 explicitly — using ``pip3`` resolves to 3.9 and
+# Spark drivers fail with ModuleNotFoundError at runtime.
+PYTHON_BIN=/usr/bin/python3.11
+
+sudo $PYTHON_BIN -m pip install --ignore-installed \
+    pydantic==2.10.6 \
+    pydantic-settings==2.8.1 \
+    great-expectations==1.3.13 \
+    prometheus-client==0.21.1 \
+    confluent-kafka==2.8.0 \
+    fastavro==1.10.0 \
+    requests==2.32.3 \
+    fhir.resources==8.0.0 \
+    aws-msk-iam-sasl-signer-python==1.0.2 \
+    PyYAML==6.0.2 \
+    boto3
+
+# delta-spark Python wrapper — installed --no-deps because its declared
+# pyspark dep otherwise pulls PyPI's pyspark and clobbers
+# /usr/lib/spark/bin/spark-submit. The Delta JVM jars are symlinked from
+# /usr/share/aws/delta/lib/ below — that's the actual dependency.
+# 3.3.x line for Spark 3.5.x; if the EMR Spark version changes, revisit.
+sudo $PYTHON_BIN -m pip install --no-deps delta-spark==3.3.0
 
 # ─── Delta Lake JVM jars on Spark classpath ─────────────────────────────────
 # EMR 7.x bundles Delta jars at /usr/share/aws/delta/lib/ but does NOT
@@ -38,14 +56,19 @@ sudo pip3 install --no-deps delta-spark==3.0.0
 # Without these symlinks, spark-defaults.conf's
 # `spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog`
 # fails with ClassNotFoundException at session init. Mirror EMR's pattern:
-# symlink the AMZN-built jars (3.1.0-amzn-0, matched to Spark 3.5.x / Scala 2.12).
+# resolve the AMZN-built jars by glob (the version + amzn-N suffix changes
+# with each EMR release — emr-7.2.0 had 3.1.0-amzn-0, emr-7.13.0 has a
+# different version, etc.) so this bootstrap survives release-label bumps
+# without code changes.
 DELTA_LIB="/usr/share/aws/delta/lib"
 SPARK_LIB="/usr/lib/spark/jars"
 if [[ -d "$DELTA_LIB" ]]; then
-  sudo ln -sf "$DELTA_LIB/delta-spark_2.12-3.1.0-amzn-0.jar" \
-              "$SPARK_LIB/delta-spark_2.12-3.1.0-amzn-0.jar"
-  sudo ln -sf "$DELTA_LIB/delta-storage-3.1.0-amzn-0.jar" \
-              "$SPARK_LIB/delta-storage-3.1.0-amzn-0.jar"
+  for jar in "$DELTA_LIB"/delta-spark_2.12-*-amzn-*.jar \
+             "$DELTA_LIB"/delta-storage-*-amzn-*.jar; do
+    [[ -f "$jar" ]] && sudo ln -sf "$jar" "$SPARK_LIB/$(basename "$jar")"
+  done
+  echo "Delta jars symlinked into $SPARK_LIB:"
+  ls -la "$SPARK_LIB"/delta-*.jar 2>&1 | head
 fi
 
 # ─── PulseTrack project code ────────────────────────────────────────────────

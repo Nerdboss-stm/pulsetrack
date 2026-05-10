@@ -13,3 +13,12 @@ output "emr_instance_profile_name" {
 output "glue_role_arn" {
   value = aws_iam_role.glue.arn
 }
+
+output "glacierbase_lock_table_name" {
+  description = "DynamoDB table backing the Glacierbase migration lock"
+  value       = aws_dynamodb_table.glacierbase_lock.name
+}
+
+output "glacierbase_lock_table_arn" {
+  value = aws_dynamodb_table.glacierbase_lock.arn
+}

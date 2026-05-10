@@ -1,4 +1,5 @@
--- V001: Create Iceberg Gold tables for PulseTrack lakehouse
+-- MIGRATION_DESCRIPTION: Create Iceberg Gold tables for the PulseTrack lakehouse (3 facts + 9 dims)
+-- MIGRATION_AUTHOR: PulseTrack Data Platform
 -- ----------------------------------------------------------------------------
 -- Creates all 12 Gold tables (3 facts + 9 dims) in the Glue-backed Iceberg
 -- catalog. Schemas mirror the Spark DataFrame writes in
@@ -17,7 +18,7 @@
 
 -- ── Facts ───────────────────────────────────────────────────────────────────
 
-CREATE TABLE IF NOT EXISTS ${ICEBERG_CATALOG}.${GLUE_DATABASE_GOLD}.fact_vital_daily_summary (
+CREATE TABLE IF NOT EXISTS {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.fact_vital_daily_summary (
     patient_key          BIGINT,
     metric_key           BIGINT,
     date_key             INT,
@@ -36,10 +37,10 @@ TBLPROPERTIES (
     'format-version'='2'
 );
 
-ALTER TABLE ${ICEBERG_CATALOG}.${GLUE_DATABASE_GOLD}.fact_vital_daily_summary
+ALTER TABLE {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.fact_vital_daily_summary
     WRITE ORDERED BY (patient_key, metric_key, date_key);
 
-CREATE TABLE IF NOT EXISTS ${ICEBERG_CATALOG}.${GLUE_DATABASE_GOLD}.fact_vital_reading (
+CREATE TABLE IF NOT EXISTS {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.fact_vital_reading (
     patient_key       BIGINT,
     metric_key        BIGINT,
     date_key          INT,
@@ -57,10 +58,10 @@ TBLPROPERTIES (
     'format-version'='2'
 );
 
-ALTER TABLE ${ICEBERG_CATALOG}.${GLUE_DATABASE_GOLD}.fact_vital_reading
+ALTER TABLE {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.fact_vital_reading
     WRITE ORDERED BY (patient_key, metric_key, event_timestamp);
 
-CREATE TABLE IF NOT EXISTS ${ICEBERG_CATALOG}.${GLUE_DATABASE_GOLD}.fact_lab_result (
+CREATE TABLE IF NOT EXISTS {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.fact_lab_result (
     patient_key           BIGINT,
     date_key              INT,
     lab_test_name         STRING,
@@ -79,12 +80,12 @@ TBLPROPERTIES (
     'format-version'='2'
 );
 
-ALTER TABLE ${ICEBERG_CATALOG}.${GLUE_DATABASE_GOLD}.fact_lab_result
+ALTER TABLE {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.fact_lab_result
     WRITE ORDERED BY (patient_key, date_key, lab_test_name);
 
 -- ── Dimensions ─────────────────────────────────────────────────────────────
 
-CREATE TABLE IF NOT EXISTS ${ICEBERG_CATALOG}.${GLUE_DATABASE_GOLD}.dim_patient (
+CREATE TABLE IF NOT EXISTS {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.dim_patient (
     patient_key            BIGINT,
     patient_id_masked      STRING,
     age_group              STRING,
@@ -99,7 +100,7 @@ TBLPROPERTIES (
     'format-version'='2'
 );
 
-CREATE TABLE IF NOT EXISTS ${ICEBERG_CATALOG}.${GLUE_DATABASE_GOLD}.dim_device (
+CREATE TABLE IF NOT EXISTS {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.dim_device (
     device_key        BIGINT,
     device_id         STRING,
     device_type       STRING,
@@ -116,7 +117,7 @@ TBLPROPERTIES (
     'format-version'='2'
 );
 
-CREATE TABLE IF NOT EXISTS ${ICEBERG_CATALOG}.${GLUE_DATABASE_GOLD}.dim_metric (
+CREATE TABLE IF NOT EXISTS {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.dim_metric (
     metric_key   BIGINT,
     metric_name  STRING,
     unit         STRING,
@@ -130,7 +131,7 @@ TBLPROPERTIES (
     'format-version'='2'
 );
 
-CREATE TABLE IF NOT EXISTS ${ICEBERG_CATALOG}.${GLUE_DATABASE_GOLD}.dim_date (
+CREATE TABLE IF NOT EXISTS {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.dim_date (
     date                    DATE,
     date_key                INT,
     year                    INT,
@@ -154,7 +155,7 @@ TBLPROPERTIES (
     'format-version'='2'
 );
 
-CREATE TABLE IF NOT EXISTS ${ICEBERG_CATALOG}.${GLUE_DATABASE_GOLD}.dim_time (
+CREATE TABLE IF NOT EXISTS {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.dim_time (
     time_key           INT,
     hour               INT,
     minute             INT,
@@ -169,7 +170,7 @@ TBLPROPERTIES (
     'format-version'='2'
 );
 
-CREATE TABLE IF NOT EXISTS ${ICEBERG_CATALOG}.${GLUE_DATABASE_GOLD}.dim_condition (
+CREATE TABLE IF NOT EXISTS {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.dim_condition (
     condition_key           BIGINT,
     condition_code          STRING,
     condition_name          STRING,
@@ -181,7 +182,7 @@ TBLPROPERTIES (
     'format-version'='2'
 );
 
-CREATE TABLE IF NOT EXISTS ${ICEBERG_CATALOG}.${GLUE_DATABASE_GOLD}.dim_condition_category (
+CREATE TABLE IF NOT EXISTS {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.dim_condition_category (
     condition_category_key  BIGINT,
     category_code           STRING,
     category_name           STRING,
@@ -193,7 +194,7 @@ TBLPROPERTIES (
     'format-version'='2'
 );
 
-CREATE TABLE IF NOT EXISTS ${ICEBERG_CATALOG}.${GLUE_DATABASE_GOLD}.dim_medication (
+CREATE TABLE IF NOT EXISTS {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.dim_medication (
     medication_key   BIGINT,
     medication_name  STRING,
     generic_name     STRING,
@@ -205,7 +206,7 @@ TBLPROPERTIES (
     'format-version'='2'
 );
 
-CREATE TABLE IF NOT EXISTS ${ICEBERG_CATALOG}.${GLUE_DATABASE_GOLD}.dim_drug_class (
+CREATE TABLE IF NOT EXISTS {{ .variables.iceberg.catalog }}.{{ .variables.glue.database.gold }}.dim_drug_class (
     drug_class_key  BIGINT,
     class_name      STRING,
     drug_family     STRING

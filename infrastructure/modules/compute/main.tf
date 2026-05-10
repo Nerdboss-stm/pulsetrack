@@ -7,7 +7,23 @@ locals {
 resource "aws_emr_cluster" "spark" {
   name          = "${var.name_prefix}-emr"
   release_label = var.release_label
-  applications  = ["Spark", "Hive", "JupyterEnterpriseGateway"]
+  # ``applications`` is the list of EMR-managed services to install on the
+  # cluster. Each entry MUST be a name EMR recognizes — the
+  # ``RunJobFlow`` API rejects unknowns with
+  # ``ValidationException: Specified application: X is invalid``.
+  #
+  # Iceberg and Delta are NOT managed EMR applications; both are bundled
+  # libraries:
+  #   * Iceberg: jars at ``/usr/share/aws/iceberg/lib/``; EMR auto-symlinks
+  #     into ``/usr/lib/spark/jars/`` since release 6.5.0. Spark sees the
+  #     classes; the ``glue_iceberg`` catalog and SQL extensions are wired
+  #     in ``configurations.json`` (template below).
+  #   * Delta: jars at ``/usr/share/aws/delta/lib/`` (newer EMR releases),
+  #     NOT auto-symlinked. ``bootstrap.sh`` does the symlink in a
+  #     version-glob loop so the bootstrap survives release-label bumps.
+  #
+  # Adding "Iceberg" or "Delta" here would fail RunJobFlow validation.
+  applications = ["Spark", "Hive", "JupyterEnterpriseGateway"]
 
   log_uri = "s3://${var.lakehouse_bucket}/emr-logs/"
 

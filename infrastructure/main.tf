@@ -3,12 +3,18 @@ terraform {
 
   required_providers {
     aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.70"
+      source = "hashicorp/aws"
+      # ~> 5.95 — pinned to the latest 5.x stable line. Bumped from
+      # 5.70 alongside the EMR 7.2.0 -> 7.13.0 release-label upgrade
+      # for support of newer EMR features (e.g., the latest
+      # ``aws_emr_cluster`` IAM-pass-through behavior, MSK Serverless
+      # ACL improvements). Stay on ~> 5.x until we have a deliberate
+      # plan to validate against 6.x's breaking changes.
+      version = "~> 5.95"
     }
     random = {
       source  = "hashicorp/random"
-      version = "~> 3.6"
+      version = "~> 3.7"
     }
   }
 }
