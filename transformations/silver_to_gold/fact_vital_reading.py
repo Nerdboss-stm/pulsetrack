@@ -211,13 +211,21 @@ def run_streaming(
         },
     )
 
-    # Silver produces APPEND-only Iceberg snapshots (INSERT-only MERGE in
-    # ``sensor_silver._process_batch``); reads cleanly without
-    # streaming-skip-overwrite-snapshots. See § "Known limitations" in
-    # docs/PRODUCTION_RUNBOOK.md for the why.
+    # Silver's foreachBatch ``MERGE INTO`` produces ``overwrite`` snapshots
+    # even when no rows match (Iceberg classifies any MERGE write that
+    # rewrites data files as overwrite). The streaming source rejects
+    # overwrite by default; set ``streaming-skip-overwrite-snapshots=true``
+    # so gold treats them as no-ops for retract semantics.
+    #
+    # Trade-off: gold misses retract semantics for silver UPDATEs that
+    # rewrite existing rows. Daily aggregates downstream are idempotent
+    # over (patient_key, metric_key, date_key), so the next batch tick
+    # reconciles. See § "Known limitations" in docs/PRODUCTION_RUNBOOK.md.
     if fmt == "iceberg":
-        silver_stream = spark.readStream.format("iceberg").load(
-            f"{settings.iceberg_catalog}.{settings.glue_db_silver}.sensor_readings"
+        silver_stream = (
+            spark.readStream.format("iceberg")
+            .option("streaming-skip-overwrite-snapshots", "true")
+            .load(f"{settings.iceberg_catalog}.{settings.glue_db_silver}.sensor_readings")
         )
     else:
         silver_stream = (

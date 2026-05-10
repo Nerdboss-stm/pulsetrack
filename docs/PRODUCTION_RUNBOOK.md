@@ -281,37 +281,81 @@ process — verify in the DynamoDB console and `DeleteItem` manually with
 
 ## 4. Known limitations
 
-### 4.1 Iceberg streaming gold from Iceberg silver (resolved on EMR 7.13.0)
+### 4.1 Iceberg streaming gold from Iceberg silver (mitigated on EMR 7.13.0)
 
-Silver's `foreachBatch` MERGE produces Iceberg "overwrite" snapshots.
-On older Iceberg (1.5.0, shipped with EMR 7.2.0), the streaming source
-rejected these by default:
+Silver's `foreachBatch` MERGE produces Iceberg `overwrite` snapshots even
+when no rows match (Iceberg classifies any MERGE write that rewrites
+data files as overwrite). The Iceberg streaming source rejects these by
+default with:
 
 ```
 java.lang.IllegalStateException: Cannot process overwrite snapshot: <id>,
 to ignore overwrites, set streaming-skip-overwrite-snapshots=true
 ```
 
-**EMR 7.13.0 ships Iceberg 1.10.0**, where the streaming source handles
-overwrite snapshots cleanly. The gold transforms (`fact_vital_daily_summary`,
-`fact_vital_reading`, `fact_lab_result`) now run streaming with the full
-MERGE INTO path — no `streaming-skip-overwrite-snapshots` workaround
-needed, no retract loss.
+**This was true on Iceberg 1.5.0 and remains true on 1.10.0** — earlier
+notes that 1.10 "handled overwrite snapshots cleanly" were wrong. The
+streaming source still rejects overwrite by design; the operator's job
+is to opt in to skipping them.
 
-For continuous streaming end-to-end:
+The fix (already wired into both gold streaming readers — see
+`transformations/silver_to_gold/{fact_vital_reading,fact_vital_daily_summary}.py`):
+
+```python
+spark.readStream.format("iceberg")
+    .option("streaming-skip-overwrite-snapshots", "true")
+    .load("glue_iceberg.<silver_db>.sensor_readings")
+```
+
+Trade-off: gold misses retract semantics for silver UPDATEs that
+rewrite existing rows. Daily aggregates and per-reading facts are
+idempotent over their grain keys (`(patient_key, metric_key, date_key)`
+for daily summary; `(reading_id, metric_name)` for vital_reading), so
+the next batch tick reconciles cleanly.
+
+For continuous streaming end-to-end (verified on EMR 7.13.0 / Iceberg 1.10):
 
 ```bash
-# Producer in continuous mode
+# Producer in continuous mode (runs on EMR master — MSK Serverless DNS
+# only resolves inside the VPC).
 python3 scripts/produce_sensor_records.py \
     --brokers boot-XXXX.kafka-serverless.us-east-1.amazonaws.com:9098 \
     --topic   sensor_readings \
-    --continuous --interval-seconds 5
+    --mode continuous --count 100 --interval-seconds 5
 
 # Bronze + silver + gold all on default `--trigger processing` (continuous)
-/usr/lib/spark/bin/spark-submit ... streaming/bronze_ingestion.py
-/usr/lib/spark/bin/spark-submit ... transformations/bronze_to_silver/sensor_silver.py --mode streaming
-/usr/lib/spark/bin/spark-submit ... transformations/silver_to_gold/fact_vital_daily_summary.py --mode streaming
+/usr/lib/spark/bin/spark-submit --master yarn --deploy-mode client \
+    --conf spark.executor.memory=1g --conf spark.executor.instances=1 \
+    --conf spark.dynamicAllocation.enabled=false \
+    streaming/bronze_ingestion.py --trigger processing --format iceberg
+
+/usr/lib/spark/bin/spark-submit --master yarn --deploy-mode client \
+    --conf spark.executor.memory=1g --conf spark.executor.instances=1 \
+    --conf spark.dynamicAllocation.enabled=false \
+    transformations/bronze_to_silver/sensor_silver.py \
+    --mode streaming --trigger processing --format iceberg
+
+/usr/lib/spark/bin/spark-submit --master yarn --deploy-mode client \
+    --conf spark.executor.memory=1g --conf spark.executor.instances=1 \
+    --conf spark.dynamicAllocation.enabled=false \
+    transformations/silver_to_gold/fact_vital_reading.py \
+    --mode streaming --trigger processing --format iceberg
 ```
+
+**Sizing note:** the dev cluster is 1 master + 2 core nodes. With YARN's
+default executor sizing, three streaming apps don't fit (each app gets
+1 AM container + 2g default executors → ~9 containers across 4 available).
+Pin each stream to `--conf spark.executor.instances=1
+--conf spark.executor.memory=1g --conf spark.dynamicAllocation.enabled=false`
+to fit all three plus headroom. For prod, scale core nodes up and remove
+the caps.
+
+**Python 3.11 note:** EMR 7.13 ships both Python 3.9 and 3.11; spark-submit
+defaults to 3.11 (PYSPARK_PYTHON in `/usr/lib/spark/conf/spark-env.sh`).
+The bootstrap installs all Python deps under `/usr/bin/python3.11`. If a
+stream errors with `ModuleNotFoundError`, ensure the missing dep is
+installed for 3.11 specifically — `pip3` resolves to 3.9 and silently
+won't satisfy spark-submit drivers.
 
 The Delta path retains full retract correctness via Delta's CDF (Change
 Data Feed) and is preserved for the local dev loop.
