@@ -73,10 +73,17 @@ def _summarize(run_results: dict) -> tuple[int, int, int, int, list[str]]:
     return p, w, e, s, failed
 
 
-def _dbt(args: list[str], target: str, project_dir: str) -> DBTRunResult:
+def _dbt(args: list[str], target: str, project_dir: Optional[str]) -> DBTRunResult:
     """Run ``dbt <args>``; capture run_results.json."""
     log = get_run_logger()
     started = time.time()
+
+    # Resolve project_dir: explicit arg > env var > module default.
+    project_dir = project_dir or DBT_PROJECT_DIR
+    if not project_dir:
+        raise ValueError(
+            "project_dir not set — pass explicitly or set PT_DBT_PROJECT_DIR"
+        )
 
     env = os.environ.copy()
     env["DBT_PROFILES_DIR"] = project_dir
@@ -116,7 +123,7 @@ def _dbt(args: list[str], target: str, project_dir: str) -> DBTRunResult:
 @task(name="dbt_deps", retries=2, tags=["dbt"])
 def dbt_deps(
     target: str = DBT_TARGET,
-    project_dir: str = DBT_PROJECT_DIR,
+    project_dir: Optional[str] = None,
 ) -> DBTRunResult:
     """``dbt deps`` — install package dependencies."""
     return _dbt(["deps"], target, project_dir)
@@ -125,7 +132,7 @@ def dbt_deps(
 @task(name="dbt_seed", retries=1, tags=["dbt"])
 def dbt_seed(
     target: str = DBT_TARGET,
-    project_dir: str = DBT_PROJECT_DIR,
+    project_dir: Optional[str] = None,
     full_refresh: bool = False,
 ) -> DBTRunResult:
     """``dbt seed`` — load reference + fixture seeds."""
@@ -139,7 +146,7 @@ def dbt_seed(
 def dbt_run(
     select: Optional[str] = None,
     target: str = DBT_TARGET,
-    project_dir: str = DBT_PROJECT_DIR,
+    project_dir: Optional[str] = None,
 ) -> DBTRunResult:
     """``dbt run`` — execute models. Optionally narrow with ``--select``."""
     args = ["run"]
@@ -152,7 +159,7 @@ def dbt_run(
 def dbt_test(
     select: Optional[str] = None,
     target: str = DBT_TARGET,
-    project_dir: str = DBT_PROJECT_DIR,
+    project_dir: Optional[str] = None,
 ) -> DBTRunResult:
     """``dbt test`` — run generic + singular tests."""
     args = ["test"]
@@ -165,7 +172,7 @@ def dbt_test(
 def dbt_build(
     select: Optional[str] = None,
     target: str = DBT_TARGET,
-    project_dir: str = DBT_PROJECT_DIR,
+    project_dir: Optional[str] = None,
     fail_fast: bool = True,
 ) -> DBTRunResult:
     """``dbt build`` — compile + run + test in dependency order."""
@@ -180,7 +187,7 @@ def dbt_build(
 @task(name="dbt_snapshot", retries=1, tags=["dbt", "snapshot"])
 def dbt_snapshot(
     target: str = DBT_TARGET,
-    project_dir: str = DBT_PROJECT_DIR,
+    project_dir: Optional[str] = None,
 ) -> DBTRunResult:
     """``dbt snapshot`` — refresh SCD2 snapshots (snap_dim_device)."""
     return _dbt(["snapshot"], target, project_dir)
@@ -189,7 +196,7 @@ def dbt_snapshot(
 @task(name="dbt_source_freshness", retries=1, tags=["dbt", "freshness"])
 def dbt_source_freshness(
     target: str = DBT_TARGET,
-    project_dir: str = DBT_PROJECT_DIR,
+    project_dir: Optional[str] = None,
 ) -> DBTRunResult:
     """``dbt source freshness`` — check silver-source SLAs."""
     return _dbt(["source", "freshness"], target, project_dir)
@@ -198,7 +205,7 @@ def dbt_source_freshness(
 @task(name="dbt_docs_generate", retries=1, tags=["dbt", "docs"])
 def dbt_docs_generate(
     target: str = DBT_TARGET,
-    project_dir: str = DBT_PROJECT_DIR,
+    project_dir: Optional[str] = None,
 ) -> DBTRunResult:
     """``dbt docs generate`` — build the docs site artifacts."""
     return _dbt(["docs", "generate"], target, project_dir)
