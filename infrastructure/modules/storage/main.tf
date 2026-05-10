@@ -165,3 +165,34 @@ resource "aws_s3_object" "emr_bootstrap" {
 
   content_type = "text/x-shellscript"
 }
+
+# ── CloudWatch Request Metrics on the lakehouse bucket ────────────────────
+#
+# Enables per-bucket request-level CloudWatch metrics under the
+# AWS/S3 namespace: AllRequests, GetRequests, PutRequests, 4xxErrors,
+# 5xxErrors (the 503 SlowDown counter we care about for partition
+# benchmarks), FirstByteLatency, TotalRequestLatency.
+#
+# Metrics propagate to CloudWatch with ~15 min delay. For benchmarks
+# in benchmarks/s3_partition_benchmark.py, query CloudWatch via
+# ``aws cloudwatch get-metric-statistics --namespace AWS/S3 ...``
+# 20 min after the run completes.
+#
+# Filter scoped to the ``benchmarks/`` prefix so the production
+# bronze/silver/gold paths aren't measured (cuts CloudWatch cost and
+# keeps the benchmark numbers clean — no production traffic noise).
+resource "aws_s3_bucket_metric" "benchmark" {
+  bucket = aws_s3_bucket.lakehouse.id
+  name   = "benchmark-prefix"
+
+  filter {
+    prefix = "benchmarks/"
+  }
+}
+
+# Bucket-wide metrics (no filter) — captures everything for ops
+# observability. Free first 1k filters; this is one of them.
+resource "aws_s3_bucket_metric" "bucket_wide" {
+  bucket = aws_s3_bucket.lakehouse.id
+  name   = "bucket-wide"
+}

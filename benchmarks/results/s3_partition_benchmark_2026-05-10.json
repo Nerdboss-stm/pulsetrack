@@ -1,0 +1,93 @@
+{
+  "started_at": "2026-05-10T18:32:12.069491+00:00",
+  "ended_at": "2026-05-10T18:43:59.874205+00:00",
+  "records": 1000000,
+  "devices": 1000,
+  "thundering_herd_records": 500000,
+  "runs": [
+    {
+      "strategy": "date_first",
+      "records": 1000000,
+      "devices": 1000,
+      "output_path": "s3://pulsetrack-lakehouse-dev-03a28ee7/benchmarks/s3-partition/date_first/",
+      "wall_clock_seconds": 106.433,
+      "files_written": 2000,
+      "distinct_partition_dirs": 1000,
+      "bytes_written": 6563762,
+      "cloudwatch_5xx": null,
+      "cloudwatch_put_requests": null,
+      "notes": []
+    },
+    {
+      "strategy": "reversed_id",
+      "records": 1000000,
+      "devices": 1000,
+      "output_path": "s3://pulsetrack-lakehouse-dev-03a28ee7/benchmarks/s3-partition/reversed_id/",
+      "wall_clock_seconds": 97.396,
+      "files_written": 2000,
+      "distinct_partition_dirs": 1000,
+      "bytes_written": 6563762,
+      "cloudwatch_5xx": null,
+      "cloudwatch_put_requests": null,
+      "notes": []
+    },
+    {
+      "strategy": "hash_bucket",
+      "records": 1000000,
+      "devices": 1000,
+      "output_path": "s3://pulsetrack-lakehouse-dev-03a28ee7/benchmarks/s3-partition/hash_bucket/",
+      "wall_clock_seconds": 24.655,
+      "files_written": 512,
+      "distinct_partition_dirs": 256,
+      "bytes_written": 3375709,
+      "cloudwatch_5xx": null,
+      "cloudwatch_put_requests": null,
+      "notes": []
+    },
+    {
+      "strategy": "date_first",
+      "records": 500000,
+      "devices": 1000,
+      "output_path": "s3://pulsetrack-lakehouse-dev-03a28ee7/benchmarks/s3-partition/herd-date_first/",
+      "wall_clock_seconds": 85.679,
+      "files_written": 4000,
+      "distinct_partition_dirs": 1000,
+      "bytes_written": 9452832,
+      "cloudwatch_5xx": null,
+      "cloudwatch_put_requests": null,
+      "notes": [
+        "thundering-herd: all records on 1 day"
+      ]
+    },
+    {
+      "strategy": "reversed_id",
+      "records": 500000,
+      "devices": 1000,
+      "output_path": "s3://pulsetrack-lakehouse-dev-03a28ee7/benchmarks/s3-partition/herd-reversed_id/",
+      "wall_clock_seconds": 87.24,
+      "files_written": 4000,
+      "distinct_partition_dirs": 1000,
+      "bytes_written": 9452832,
+      "cloudwatch_5xx": null,
+      "cloudwatch_put_requests": null,
+      "notes": [
+        "thundering-herd: all records on 1 day"
+      ]
+    },
+    {
+      "strategy": "hash_bucket",
+      "records": 500000,
+      "devices": 1000,
+      "output_path": "s3://pulsetrack-lakehouse-dev-03a28ee7/benchmarks/s3-partition/herd-hash_bucket/",
+      "wall_clock_seconds": 23.122,
+      "files_written": 1024,
+      "distinct_partition_dirs": 256,
+      "bytes_written": 3364816,
+      "cloudwatch_5xx": null,
+      "cloudwatch_put_requests": null,
+      "notes": [
+        "thundering-herd: all records on 1 day"
+      ]
+    }
+  ]
+}
