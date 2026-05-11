@@ -48,19 +48,44 @@ def load_ehr_demographics(spark):
     Read patient_id, patient_email, patient_birth_year from raw EHR batch JSON files.
     Silver ehr_silver.py does not capture these patient-level fields — only the entries
     (Condition, MedicationStatement, Observation) are stored in Silver.
+
+    S3-aware: when settings.ehr_batch_dir is s3:// or s3a://, uses Spark to
+    read (cluster-mode safe; driver on YARN cannot reach local FS on EMR
+    master). See ehr_silver.load_all_batches for the same pattern.
     """
+    base = settings.ehr_batch_dir
     rows = []
-    for batch_file in glob.glob(os.path.join(settings.ehr_batch_dir, "*/ehr_batch.json")):
-        with open(batch_file) as f:
-            data = json.load(f)
-        for p in data["patients"]:
-            rows.append(
-                (
-                    p["patient_id"],
-                    p.get("patient_email", ""),
-                    int(p.get("patient_birth_year", 0)),
-                )
+
+    if base.startswith("s3://") or base.startswith("s3a://"):
+        spark_path = base.replace("s3://", "s3a://").rstrip("/") + "/*/ehr_batch.json"
+        try:
+            bundles_df = spark.read.option("multiLine", "true").json(spark_path)
+            for row_json in bundles_df.toJSON().collect():
+                data = json.loads(row_json)
+                for p in data.get("patients", []):
+                    rows.append((
+                        p["patient_id"],
+                        p.get("patient_email", ""),
+                        int(p.get("patient_birth_year", 0)),
+                    ))
+        except Exception as e:
+            log.warning(
+                "EHR demographics S3 read failed (no batches yet?)",
+                extra={"extra_data": {"path": spark_path, "error": str(e)[:200]}},
             )
+            # rows stays empty — empty-case path below handles cleanly
+    else:
+        for batch_file in glob.glob(os.path.join(base, "*/ehr_batch.json")):
+            with open(batch_file) as f:
+                data = json.load(f)
+            for p in data["patients"]:
+                rows.append(
+                    (
+                        p["patient_id"],
+                        p.get("patient_email", ""),
+                        int(p.get("patient_birth_year", 0)),
+                    )
+                )
 
     if not rows:
         # Empty schema MUST include the same columns the populated branch

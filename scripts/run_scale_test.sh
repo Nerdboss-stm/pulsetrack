@@ -224,6 +224,10 @@ step = [{
         '--conf', 'spark.yarn.appMasterEnv.PT_ENVIRONMENT=cloud',
         '--conf', 'spark.yarn.appMasterEnv.PT_AWS_ENV=dev',
         '--conf', 'spark.yarn.appMasterEnv.PT_LAKEHOUSE_BASE=s3://${BUCKET}',
+        # PT_EHR_BATCH_DIR must be S3 in cluster mode — fhir_producer
+        # writes to master FS, then run_scale_test.sh syncs to S3 before
+        # ehr_silver runs. dim_patient reads from this same path.
+        '--conf', 'spark.yarn.appMasterEnv.PT_EHR_BATCH_DIR=s3://${BUCKET}/ehr-batches',
         '--conf', 'spark.yarn.appMasterEnv.PT_KAFKA_BOOTSTRAP=${BOOTSTRAP}',
         '--conf', 'spark.yarn.appMasterEnv.PT_KAFKA_SECURITY_PROTOCOL=SASL_SSL',
         '--conf', 'spark.yarn.appMasterEnv.PT_ICEBERG_CATALOG_TYPE=glue',
@@ -352,55 +356,68 @@ done
 log_step "T-10m Launch all 4 producers on EMR master (tmux sessions)"
 SSH="ssh -i ~/.ssh/pulsetrack-emr.pem -o StrictHostKeyChecking=no hadoop@$MASTER_DNS"
 
-$SSH "tmux kill-server 2>/dev/null || true; tmux new-session -d -s pulsetrack"
+# EMR 7.13 master doesn't ship tmux by default. Install via yum (idempotent).
+# If install fails we fall back to nohup + & later; either way producers run.
+$SSH "command -v tmux >/dev/null || sudo yum install -y tmux 2>/dev/null" || \
+    echo "  WARN: tmux install failed; falling back to nohup mode"
+
+$SSH "tmux kill-server 2>/dev/null || true; tmux new-session -d -s pulsetrack 2>/dev/null" || \
+    echo "  WARN: tmux session creation failed"
 
 # Stage tarball + unpack on master
 $SSH "aws s3 cp s3://${BUCKET}/code/pulsetrack-scale-test.tar.gz /tmp/ && \
       mkdir -p /home/hadoop/pulsetrack && \
       tar xzf /tmp/pulsetrack-scale-test.tar.gz -C /home/hadoop/pulsetrack"
 
+# Producer launches via nohup (works without tmux; SSH-detach safe).
+# tmux is best-effort for interactive debugging; the actual producers
+# run via nohup so they survive SSH disconnects and run in parallel.
+REPORT_INTERVAL=$(( EVENT_COUNT / 200 < 5000 ? 5000 : EVENT_COUNT / 200 ))
+
 # Producer 1: batch scale producer — event count parameterized by --smoke flag.
 # Full mode: 10,000,000 events / 50,000 users. Smoke: e.g. 1000 / 50.
-$SSH "tmux new-window -t pulsetrack -n batch-scale \
-        'cd /home/hadoop/pulsetrack && \
-         AWS_DEFAULT_REGION=us-east-1 \
-         /usr/bin/python3.11 data_generators/batch_scale_producer.py \
-            --brokers $BOOTSTRAP \
-            --topic sensor_readings \
-            --count $EVENT_COUNT \
-            --users $USER_COUNT \
-            --report-interval $(( EVENT_COUNT / 200 < 5000 ? 5000 : EVENT_COUNT / 200 )) \
-            2>&1 | tee /tmp/batch-scale.log'"
+$SSH "cd /home/hadoop/pulsetrack && \
+      AWS_DEFAULT_REGION=us-east-1 nohup /usr/bin/python3.11 \
+         data_generators/batch_scale_producer.py \
+         --brokers $BOOTSTRAP --topic sensor_readings \
+         --count $EVENT_COUNT --users $USER_COUNT \
+         --report-interval $REPORT_INTERVAL \
+         > /tmp/batch-scale.log 2>&1 &
+      echo \"  batch-scale PID=\$!\""
 
 # Producer 2: WHOOP API (real account)
-$SSH "tmux new-window -t pulsetrack -n whoop-poll \
-        'cd /home/hadoop/pulsetrack && \
-         AWS_DEFAULT_REGION=us-east-1 \
-         /usr/bin/python3.11 -m data_generators.whoop_api.producer \
-            2>&1 | tee /tmp/whoop.log'"
+$SSH "cd /home/hadoop/pulsetrack && \
+      AWS_DEFAULT_REGION=us-east-1 nohup /usr/bin/python3.11 \
+         -m data_generators.whoop_api.producer \
+         > /tmp/whoop.log 2>&1 &
+      echo \"  whoop PID=\$!\""
 
 # Producer 3: OpenFDA poller
-$SSH "tmux new-window -t pulsetrack -n openfda \
-        'cd /home/hadoop/pulsetrack && \
-         AWS_DEFAULT_REGION=us-east-1 \
-         /usr/bin/python3.11 data_generators/openfda_producer.py \
-            2>&1 | tee /tmp/openfda.log'"
+$SSH "cd /home/hadoop/pulsetrack && \
+      AWS_DEFAULT_REGION=us-east-1 nohup /usr/bin/python3.11 \
+         data_generators/openfda_producer.py \
+         > /tmp/openfda.log 2>&1 &
+      echo \"  openfda PID=\$!\""
 
-# Producer 4: FHIR / EHR batch
-$SSH "tmux new-window -t pulsetrack -n fhir \
-        'cd /home/hadoop/pulsetrack && \
-         AWS_DEFAULT_REGION=us-east-1 \
-         /usr/bin/python3.11 data_generators/fhir_producer.py \
-            2>&1 | tee /tmp/fhir.log'"
+# Producer 4: FHIR / EHR batch  (single-shot — writes JSON + exits)
+$SSH "cd /home/hadoop/pulsetrack && \
+      AWS_DEFAULT_REGION=us-east-1 nohup /usr/bin/python3.11 \
+         data_generators/fhir_producer.py \
+         > /tmp/fhir.log 2>&1 &
+      echo \"  fhir PID=\$!\""
 
-echo "  All 4 producers launched. Use 'tmux attach' on master to monitor."
+echo "  All 4 producers launched (nohup). Logs at /tmp/{batch-scale,whoop,openfda,fhir}.log on master."
 
 # ── Phase 4.5: Periodic batch tier ────────────────────────────────────────
-# After producers have been running ~2 min, run the slow-side-dish batch
-# transforms. These need EHR + pharmacy bronze data to exist, which the
-# fhir + openfda producers have started writing. Submit as fire-and-forget
-# Spark batch steps; the cluster will queue them after the streaming queries
-# are stable.
+# After producers have been running ~2 min, sync EHR batches to S3, then
+# run the slow-side-dish batch transforms. silver_ehr + dim_patient need
+# EHR JSON files to exist on S3 (Spark cluster-mode driver runs on a YARN
+# container, not the EMR master where fhir_producer writes).
+log_step "T-8m Sync EHR batches to S3 (master FS → s3://${BUCKET}/ehr-batches/)"
+$SSH "aws s3 sync /home/hadoop/pulsetrack/data/ehr_batches/ \
+        s3://${BUCKET}/ehr-batches/ --quiet 2>&1 | head -5" || \
+    echo "  WARN: no EHR batches to sync (fhir_producer may have errored)"
+
 log_step "T-8m Submit batch tier (silver_ehr + silver_pharmacy + identity_bridge + dim_patient)"
 STEP_EHR_SILVER=$(submit_spark_step "scale-test-silver-ehr-batch" "transformations/bronze_to_silver/ehr_silver.py" "--format iceberg")
 STEP_PHARMACY_SILVER=$(submit_spark_step "scale-test-silver-pharmacy-batch" "transformations/bronze_to_silver/pharmacy_silver.py" "--mode batch")
@@ -469,10 +486,14 @@ fi
 
 # ── Phase 9: Stop producers + drain ──────────────────────────────────────
 log_step "T+45m Stop producers + drain streams"
-$SSH "tmux send-keys -t pulsetrack:batch-scale C-c && \
-      tmux send-keys -t pulsetrack:whoop-poll C-c && \
-      tmux send-keys -t pulsetrack:openfda C-c && \
-      tmux send-keys -t pulsetrack:fhir C-c"
+# nohup'd producers — SIGTERM by name. batch_scale_producer + WHOOP poller
+# + openfda poller are long-running; fhir_producer is single-shot and may
+# already be gone (pkill -f returns 1 for "no matches", we ignore via || true).
+$SSH "pkill -TERM -f batch_scale_producer || true; \
+      pkill -TERM -f 'whoop_api.producer' || true; \
+      pkill -TERM -f openfda_producer || true; \
+      pkill -TERM -f fhir_producer || true; \
+      echo 'producer stop signals sent'"
 
 echo "  Waiting 5 min for streams to drain (lag → 0)..."
 sleep 300

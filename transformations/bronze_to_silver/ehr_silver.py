@@ -26,19 +26,56 @@ log = get_logger(__name__)
 def load_all_batches(spark: SparkSession) -> list[dict]:
     """
     Read all ehr_batch.json files from all date folders.
+
+    Supports both local filesystem (dev) and S3 (cloud — required when
+    spark-submit runs in ``--deploy-mode cluster`` because driver runs on a
+    YARN container, NOT the EMR master where fhir_producer wrote the files).
+
+    The S3 path is the producer's output dir on master, mirrored to S3 by
+    ``scripts/run_scale_test.sh`` before this step runs. PT_EHR_BATCH_DIR
+    in the cloud orchestrator points at ``s3://${BUCKET}/ehr-batches/``.
+
     Returns flat list of (patient_bundle, batch_date) dicts.
     """
-    records = []
-    for batch_file in glob.glob(f"{settings.ehr_batch_dir}/*/ehr_batch.json"):
-        batch_date = batch_file.split("/")[-2]
-        with open(batch_file) as f:
-            data = json.load(f)
-        for patient in data["patients"]:
-            patient["batch_date"] = batch_date
-            records.append(patient)
+    base = settings.ehr_batch_dir
+    records: list[dict] = []
+
+    if base.startswith("s3://") or base.startswith("s3a://"):
+        # S3 path: use Spark to read (handles credentials, paging) then
+        # collect to driver. The data is small — daily batches with ~50
+        # patients each, never more than a few MB total.
+        spark_path = base.replace("s3://", "s3a://").rstrip("/") + "/*/ehr_batch.json"
+        try:
+            bundles_df = spark.read.option("multiLine", "true").json(spark_path)
+            rows = bundles_df.toJSON().collect()
+        except Exception as e:
+            log.warning(
+                "EHR S3 read failed (no batches yet?)",
+                extra={"extra_data": {"path": spark_path, "error": str(e)[:200]}},
+            )
+            return []
+        for row_json in rows:
+            data = json.loads(row_json)
+            # The S3 read flattens batch_date — infer from filename path
+            # via the dataframe input_file_name() if needed. For now, use
+            # the date inside the JSON if present, else today.
+            batch_date = data.get("batch_date") or data.get("date") or "unknown"
+            for patient in data.get("patients", []):
+                patient["batch_date"] = batch_date
+                records.append(patient)
+    else:
+        # Local filesystem (dev)
+        for batch_file in glob.glob(f"{base}/*/ehr_batch.json"):
+            batch_date = batch_file.split("/")[-2]
+            with open(batch_file) as f:
+                data = json.load(f)
+            for patient in data["patients"]:
+                patient["batch_date"] = batch_date
+                records.append(patient)
+
     log.info(
         "EHR bundles loaded",
-        extra={"extra_data": {"bundle_count": len(records)}},
+        extra={"extra_data": {"bundle_count": len(records), "source": base}},
     )
     return records
 

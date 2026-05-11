@@ -76,6 +76,17 @@ resource "aws_emr_cluster" "spark" {
   keep_job_flow_alive_when_no_steps = true
   visible_to_all_users              = true
 
+  # Step concurrency = how many steps run in parallel. Default 1 is FATAL
+  # for our pipeline (bronze + silver + gold facts = 4 streaming queries
+  # MUST run concurrently). With concurrency=1 they queue serially and
+  # the "wait for streams ACTIVE" loop in scripts/run_scale_test.sh times
+  # out. Bumped to 10 to absorb the 4 streams + 4 dim pre-builds + the
+  # batch tier (EHR/pharmacy silver, identity_bridge, dim_patient) without
+  # queueing. Reference: ADR-008, plus the live-cluster modify-cluster
+  # we ran during the gap-closure run because the running cluster had
+  # default concurrency 1.
+  step_concurrency_level = 10
+
   tags = {
     Name = "${var.name_prefix}-emr"
   }
