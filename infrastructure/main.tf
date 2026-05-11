@@ -121,3 +121,18 @@ module "monitoring" {
   emr_cluster_id   = module.compute.cluster_id
   lakehouse_bucket = module.storage.bucket_name
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Secrets — AWS Secrets Manager + KMS, replaces the prior `.env`-only pattern.
+# Wired after the iam module so the EMR EC2 role exists for policy attachment.
+# Bootstrap secret values via:  python scripts/bootstrap_secrets.py
+# ─────────────────────────────────────────────────────────────────────────────
+module "secrets" {
+  source = "./modules/secrets"
+
+  name_prefix       = local.name_prefix
+  environment       = var.environment
+  emr_ec2_role_name = module.iam.emr_ec2_role_name
+
+  depends_on = [module.iam]
+}

@@ -52,3 +52,18 @@ output "glacierbase_lock_table" {
   description = "DynamoDB table backing the Glacierbase migration concurrency lock"
   value       = module.iam.glacierbase_lock_table_name
 }
+
+output "secrets_kms_key_arn" {
+  description = "Customer-managed KMS key encrypting all PulseTrack secrets"
+  value       = module.secrets.kms_key_arn
+}
+
+output "secret_names" {
+  description = "Map of secret short-name → full Secrets Manager name. Use these as the SecretId for boto3 calls."
+  value       = module.secrets.secret_names
+}
+
+output "secret_arns" {
+  description = "Map of secret short-name → ARN, for any module needing fine-grained scoping"
+  value       = module.secrets.secret_arns
+}
