@@ -84,9 +84,15 @@ def _apply_local(builder):
 def get_spark_session(app_name: str = "PulseTrack") -> SparkSession:
     builder = (
         SparkSession.builder.appName(app_name)
-        .master(settings.spark_master)
         .config("spark.sql.shuffle.partitions", str(settings.shuffle_partitions))
     )
+    # In cloud mode (PT_ENVIRONMENT=cloud), let spark-submit's --deploy-mode/--master
+    # determine the cluster master. Calling .master() here overrides the YARN
+    # config and forces local mode — which means no YARN executors get allocated.
+    # The AM stays in ACCEPTED state forever because it never registers with RM.
+    # (See postmortems/2026-05-11_emr_cluster_bringup_13_incidents.md fix #15.)
+    if settings.environment != "cloud":
+        builder = builder.master(settings.spark_master)
     builder = _apply_delta_defaults(builder)
 
     if settings.environment == "cloud":

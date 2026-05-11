@@ -154,8 +154,19 @@ submit_spark_step() {
     local extra_args_str="${3:-}"
     # Spark dependencies. spark-sql-kafka-0-10 + spark-avro NOT in EMR stock.
     # MSK IAM auth jar (aws-msk-iam-auth-2.3.2.jar) IS pre-installed on EMR 7.13.
-    # Maven Central only has stock 3.5.x releases (no 3.5.6-amzn-2); 3.5.3 is fine.
-    local spark_packages="org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3,org.apache.spark:spark-avro_2.12:3.5.3"
+    #
+    # NOTE: Originally used --packages org.apache.spark:spark-sql-kafka-0-10:3.5.3
+    # but 4 simultaneous spark-submits competing for the same Maven downloads hit
+    # Maven Central rate limits and got 0-byte truncated JARs. Replaced with
+    # pre-staged S3 JARs to eliminate Maven from the runtime path entirely.
+    # See postmortems/2026-05-11_emr_cluster_bringup_13_incidents.md item #14.
+    local spark_jars="s3://${BUCKET}/spark-jars/spark-sql-kafka-0-10_2.12-3.5.3.jar"
+    spark_jars="${spark_jars},s3://${BUCKET}/spark-jars/spark-avro_2.12-3.5.3.jar"
+    spark_jars="${spark_jars},s3://${BUCKET}/spark-jars/spark-token-provider-kafka-0-10_2.12-3.5.3.jar"
+    spark_jars="${spark_jars},s3://${BUCKET}/spark-jars/kafka-clients-3.4.1.jar"
+    spark_jars="${spark_jars},s3://${BUCKET}/spark-jars/commons-pool2-2.11.1.jar"
+    spark_jars="${spark_jars},s3://${BUCKET}/spark-jars/lz4-java-1.8.0.jar"
+    spark_jars="${spark_jars},s3://${BUCKET}/spark-jars/snappy-java-1.1.10.5.jar"
 
     # Use JSON file for --steps because the bracketed Args=[...] syntax uses
     # commas as separators — that breaks --packages (which itself uses
@@ -172,8 +183,14 @@ step = [{
     'Jar': 'command-runner.jar',
     'Args': [
         'spark-submit', '--deploy-mode', 'cluster',
-        '--packages', '${spark_packages}',
+        '--jars', '${spark_jars}',
         '--conf', 'spark.pyspark.python=/usr/bin/python3.11',
+        # spark.yarn.am.waitTime — default 100s is too short for our Python
+        # driver startup (deps.zip extraction + imports + Spark/Iceberg/Kafka
+        # session init blows past 100s, AM future times out, app FAILS even
+        # though Python script logged 'Bronze running' successfully).
+        '--conf', 'spark.yarn.am.waitTime=600s',
+        '--conf', 'spark.network.timeout=600s',
         '--conf', 'spark.yarn.appMasterEnv.PT_ENVIRONMENT=cloud',
         '--conf', 'spark.yarn.appMasterEnv.PT_AWS_ENV=dev',
         '--conf', 'spark.yarn.appMasterEnv.PT_LAKEHOUSE_BASE=s3://${BUCKET}',

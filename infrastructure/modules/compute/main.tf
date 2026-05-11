@@ -35,7 +35,10 @@ resource "aws_emr_cluster" "spark" {
   core_instance_group {
     instance_type  = var.core_instance_type
     instance_count = var.core_instance_count
-    bid_price      = var.core_spot_bid_price
+    # Empty string => on-demand (passing null to bid_price makes EMR use the
+    # ON_DEMAND market). Streaming workloads can't tolerate spot reclamation
+    # mid-run — see postmortems/2026-05-11_emr_cluster_bringup_13_incidents.md
+    bid_price = var.core_spot_bid_price == "" ? null : var.core_spot_bid_price
 
     ebs_config {
       size                 = var.ebs_volume_size_gb

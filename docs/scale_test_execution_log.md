@@ -1139,3 +1139,254 @@ ERROR: 'unset env var referenced in config: ${LAKEHOUSE_BUCKET}'
 0: syntax error in expression (error token is "0")
 
 ABORT: Streams did not become active within 5 min (need ≥3 of 4)
+
+===============================================================================
+PulseTrack scale test — 2026-05-11T15:51:41Z
+===============================================================================
+
+
+── [15:51:41Z] T-30m Pre-flight credential validator ──
+PulseTrack pre-flight (14 checks)
+
+  [PASS] aws.sts                   account=960341592614 arn=arn:aws:iam::960341592614:user/pulsetrack-admin  (239ms)
+  [PASS] aws.region                region=us-east-1
+  [PASS] aws.s3                    bucket=pulsetrack-lakehouse-dev-03a28ee7 put+delete OK  (421ms)
+  [PASS] aws.glue                  all 3 dbs present: ['pulsetrack_bronze_dev', 'pulsetrack_silver_dev', 'pulsetrack_gold_dev']
+  [PASS] aws.msk                   name=pulsetrack-dev-msk state=ACTIVE
+{"timestamp": "2026-05-11T15:51:44.976806+00:00", "level": "INFO", "logger": "pt_secrets.manager", "message": "secret resolved", "module": "manager", "function": "get", "line": 269, "secret": "whoop", "source": "aws", "latency_ms": 234.5, "fields_count": 5}
+  [PASS] secret.whoop              5 fields resolved  (235ms)
+{"timestamp": "2026-05-11T15:51:45.070008+00:00", "level": "INFO", "logger": "pt_secrets.manager", "message": "secret resolved", "module": "manager", "function": "get", "line": 269, "secret": "anthropic", "source": "aws", "latency_ms": 93.1, "fields_count": 1}
+  [PASS] secret.anthropic          1 fields resolved  (93ms)
+{"timestamp": "2026-05-11T15:51:45.147928+00:00", "level": "INFO", "logger": "pt_secrets.manager", "message": "secret resolved", "module": "manager", "function": "get", "line": 269, "secret": "snowflake", "source": "aws", "latency_ms": 77.7, "fields_count": 7}
+  [PASS] secret.snowflake          7 fields resolved  (78ms)
+{"timestamp": "2026-05-11T15:51:45.232223+00:00", "level": "INFO", "logger": "pt_secrets.manager", "message": "secret resolved", "module": "manager", "function": "get", "line": 269, "secret": "slack", "source": "aws", "latency_ms": 84.2, "fields_count": 1}
+  [PASS] secret.slack              1 fields resolved  (84ms)
+{"timestamp": "2026-05-11T15:51:45.311192+00:00", "level": "INFO", "logger": "pt_secrets.manager", "message": "secret resolved", "module": "manager", "function": "get", "line": 269, "secret": "whoop-tokens", "source": "aws", "latency_ms": 78.9, "fields_count": 3}
+  [WARN] whoop.tokens              access_token expired 210817s ago — refresh will fire on next API call
+  [PASS] snowflake.connect         version=10.16.101  (1593ms)
+  [WARN] snowflake.views           could not validate: ProgrammingError: 002003 (42S02): SQL compilation error:
+Object 'PULSETRACK.INFORMATION_SCHEMA.ICEBERG_TABLES' does not exist or not authorized.
+  [PASS] anthropic.ping              (853ms)
+  [PASS] slack.webhook             http 200  (326ms)
+
+0 FAIL / 14 checks
+Ready for the scale test.
+
+── [15:51:51Z] T-29m Verifying terraform state ──
+  cluster_id=j-T5OF7WBI2I4V
+  master_dns=ec2-3-228-22-91.compute-1.amazonaws.com
+  msk=boot-hgcm6ppg.c3.kafka-serverless.us-east-1.amazonaws.com:9098
+  bucket=pulsetrack-lakehouse-dev-03a28ee7
+
+── [15:51:55Z] T-25m Apply pending Glacierbase migrations ──
+ERROR: 'unset env var referenced in config: ${LAKEHOUSE_BUCKET}'
+  WARN: migrations failed or already applied (continuing)
+
+── [15:51:56Z] T-20m Sync project to EMR master via S3 ──
+  syncing source tree to s3://pulsetrack-lakehouse-dev-03a28ee7/code/
+  uploaded deps zip: 392K
+  uploaded producer tarball: 6.1M
+
+── [15:52:05Z] T-16m Create Kafka topics (sensor_readings, pharmacy_events, pulsetrack_dlq) ──
+Warning: Permanently added 'ec2-3-228-22-91.compute-1.amazonaws.com' (ED25519) to the list of known hosts.
+  created topic: sensor_readings
+  created topic: pharmacy_events
+  created topic: pulsetrack_dlq
+
+── [15:52:13Z] T-15m Start streaming bronze (sensor) ──
+  bronze_step_id=s-01390473AP53T1YYO2CT
+
+── [15:52:14Z] T-14m Start streaming silver (sensor) ──
+  silver_step_id=s-037621712K17E57NRQ8J
+
+── [15:52:16Z] T-13m Start gold fact_vital_reading ──
+  gold_fvr_step_id=s-01820313DUE5KJ90QSXO
+
+── [15:52:17Z] T-12m Start gold fact_vital_daily_summary ──
+  gold_fvd_step_id=s-09677492WS4CADZOGHPZ
+
+── [15:52:19Z] T-12m Wait for streams to be ACTIVE (max 5 min) ──
+  apps_running=0
+0 (target=4)
+./scripts/run_scale_test.sh: line 286: [[: 0
+0: syntax error in expression (error token is "0")
+  apps_running=0
+0 (target=4)
+./scripts/run_scale_test.sh: line 286: [[: 0
+0: syntax error in expression (error token is "0")
+  apps_running=0
+0 (target=4)
+./scripts/run_scale_test.sh: line 286: [[: 0
+0: syntax error in expression (error token is "0")
+
+===============================================================================
+PulseTrack scale test — 2026-05-11T15:54:35Z
+===============================================================================
+
+
+── [15:54:35Z] T-30m Pre-flight credential validator ──
+PulseTrack pre-flight (14 checks)
+
+  [PASS] aws.sts                   account=960341592614 arn=arn:aws:iam::960341592614:user/pulsetrack-admin  (425ms)
+  [PASS] aws.region                region=us-east-1
+  [PASS] aws.s3                    bucket=pulsetrack-lakehouse-dev-03a28ee7 put+delete OK  (392ms)
+  [PASS] aws.glue                  all 3 dbs present: ['pulsetrack_bronze_dev', 'pulsetrack_silver_dev', 'pulsetrack_gold_dev']
+  [PASS] aws.msk                   name=pulsetrack-dev-msk state=ACTIVE
+{"timestamp": "2026-05-11T15:54:40.537723+00:00", "level": "INFO", "logger": "pt_secrets.manager", "message": "secret resolved", "module": "manager", "function": "get", "line": 269, "secret": "whoop", "source": "aws", "latency_ms": 260.6, "fields_count": 5}
+  [PASS] secret.whoop              5 fields resolved  (262ms)
+{"timestamp": "2026-05-11T15:54:40.628574+00:00", "level": "INFO", "logger": "pt_secrets.manager", "message": "secret resolved", "module": "manager", "function": "get", "line": 269, "secret": "anthropic", "source": "aws", "latency_ms": 90.6, "fields_count": 1}
+  [PASS] secret.anthropic          1 fields resolved  (91ms)
+{"timestamp": "2026-05-11T15:54:40.715764+00:00", "level": "INFO", "logger": "pt_secrets.manager", "message": "secret resolved", "module": "manager", "function": "get", "line": 269, "secret": "snowflake", "source": "aws", "latency_ms": 87.0, "fields_count": 7}
+  [PASS] secret.snowflake          7 fields resolved  (87ms)
+{"timestamp": "2026-05-11T15:54:40.806398+00:00", "level": "INFO", "logger": "pt_secrets.manager", "message": "secret resolved", "module": "manager", "function": "get", "line": 269, "secret": "slack", "source": "aws", "latency_ms": 90.5, "fields_count": 1}
+  [PASS] secret.slack              1 fields resolved  (91ms)
+{"timestamp": "2026-05-11T15:54:40.903103+00:00", "level": "INFO", "logger": "pt_secrets.manager", "message": "secret resolved", "module": "manager", "function": "get", "line": 269, "secret": "whoop-tokens", "source": "aws", "latency_ms": 96.4, "fields_count": 3}
+  [WARN] whoop.tokens              access_token expired 210993s ago — refresh will fire on next API call
+  [PASS] snowflake.connect         version=10.16.101  (2925ms)
+  [WARN] snowflake.views           could not validate: ProgrammingError: 002003 (42S02): SQL compilation error:
+Object 'PULSETRACK.INFORMATION_SCHEMA.ICEBERG_TABLES' does not exist or not authorized.
+  [PASS] anthropic.ping              (843ms)
+  [PASS] slack.webhook             http 200  (300ms)
+
+0 FAIL / 14 checks
+Ready for the scale test.
+
+── [15:54:56Z] T-29m Verifying terraform state ──
+  cluster_id=j-T5OF7WBI2I4V
+  master_dns=ec2-3-228-22-91.compute-1.amazonaws.com
+  msk=boot-hgcm6ppg.c3.kafka-serverless.us-east-1.amazonaws.com:9098
+  bucket=pulsetrack-lakehouse-dev-03a28ee7
+
+── [15:55:05Z] T-25m Apply pending Glacierbase migrations ──
+ERROR: 'unset env var referenced in config: ${LAKEHOUSE_BUCKET}'
+  WARN: migrations failed or already applied (continuing)
+
+── [15:55:05Z] T-20m Sync project to EMR master via S3 ──
+  syncing source tree to s3://pulsetrack-lakehouse-dev-03a28ee7/code/
+  uploaded deps zip: 392K
+  uploaded producer tarball: 6.1M
+
+── [15:55:16Z] T-16m Create Kafka topics (sensor_readings, pharmacy_events, pulsetrack_dlq) ──
+  topic sensor_readings already exists (OK)
+  topic pharmacy_events already exists (OK)
+  topic pulsetrack_dlq already exists (OK)
+
+── [15:55:23Z] T-15m Start streaming bronze (sensor) ──
+  bronze_step_id=s-0979116382BI993Z9GL4
+
+── [15:55:26Z] T-14m Start streaming silver (sensor) ──
+  silver_step_id=s-06060441TW6X0A824ONV
+
+── [15:55:27Z] T-13m Start gold fact_vital_reading ──
+  gold_fvr_step_id=s-09285213A0KT8KSBRKIB
+
+── [15:55:29Z] T-12m Start gold fact_vital_daily_summary ──
+  gold_fvd_step_id=s-00742282NJNH91BF3666
+
+── [15:55:30Z] T-12m Wait for streams to be ACTIVE (max 5 min) ──
+  apps_running=0
+0 (target=4)
+./scripts/run_scale_test.sh: line 286: [[: 0
+0: syntax error in expression (error token is "0")
+  apps_running=0
+0 (target=4)
+./scripts/run_scale_test.sh: line 286: [[: 0
+0: syntax error in expression (error token is "0")
+  apps_running=0
+0 (target=4)
+./scripts/run_scale_test.sh: line 286: [[: 0
+0: syntax error in expression (error token is "0")
+
+===============================================================================
+PulseTrack scale test — 2026-05-11T15:58:10Z
+===============================================================================
+
+
+── [15:58:10Z] T-30m Pre-flight credential validator ──
+PulseTrack pre-flight (14 checks)
+
+  [PASS] aws.sts                   account=960341592614 arn=arn:aws:iam::960341592614:user/pulsetrack-admin  (250ms)
+  [PASS] aws.region                region=us-east-1
+  [PASS] aws.s3                    bucket=pulsetrack-lakehouse-dev-03a28ee7 put+delete OK  (399ms)
+  [PASS] aws.glue                  all 3 dbs present: ['pulsetrack_bronze_dev', 'pulsetrack_silver_dev', 'pulsetrack_gold_dev']
+  [PASS] aws.msk                   name=pulsetrack-dev-msk state=ACTIVE
+{"timestamp": "2026-05-11T15:58:14.203631+00:00", "level": "INFO", "logger": "pt_secrets.manager", "message": "secret resolved", "module": "manager", "function": "get", "line": 269, "secret": "whoop", "source": "aws", "latency_ms": 278.2, "fields_count": 5}
+  [PASS] secret.whoop              5 fields resolved  (278ms)
+{"timestamp": "2026-05-11T15:58:14.303642+00:00", "level": "INFO", "logger": "pt_secrets.manager", "message": "secret resolved", "module": "manager", "function": "get", "line": 269, "secret": "anthropic", "source": "aws", "latency_ms": 99.8, "fields_count": 1}
+  [PASS] secret.anthropic          1 fields resolved  (100ms)
+{"timestamp": "2026-05-11T15:58:14.395248+00:00", "level": "INFO", "logger": "pt_secrets.manager", "message": "secret resolved", "module": "manager", "function": "get", "line": 269, "secret": "snowflake", "source": "aws", "latency_ms": 91.4, "fields_count": 7}
+  [PASS] secret.snowflake          7 fields resolved  (92ms)
+{"timestamp": "2026-05-11T15:58:14.494458+00:00", "level": "INFO", "logger": "pt_secrets.manager", "message": "secret resolved", "module": "manager", "function": "get", "line": 269, "secret": "slack", "source": "aws", "latency_ms": 98.8, "fields_count": 1}
+  [PASS] secret.slack              1 fields resolved  (99ms)
+{"timestamp": "2026-05-11T15:58:14.576084+00:00", "level": "INFO", "logger": "pt_secrets.manager", "message": "secret resolved", "module": "manager", "function": "get", "line": 269, "secret": "whoop-tokens", "source": "aws", "latency_ms": 81.3, "fields_count": 3}
+  [WARN] whoop.tokens              access_token expired 211207s ago — refresh will fire on next API call
+  [PASS] snowflake.connect         version=10.16.101  (1906ms)
+  [WARN] snowflake.views           could not validate: ProgrammingError: 002003 (42S02): SQL compilation error:
+Object 'PULSETRACK.INFORMATION_SCHEMA.ICEBERG_TABLES' does not exist or not authorized.
+  [PASS] anthropic.ping              (828ms)
+  [PASS] slack.webhook             http 200  (271ms)
+
+0 FAIL / 14 checks
+Ready for the scale test.
+
+── [15:58:22Z] T-29m Verifying terraform state ──
+  cluster_id=j-T5OF7WBI2I4V
+  master_dns=ec2-3-228-22-91.compute-1.amazonaws.com
+  msk=boot-hgcm6ppg.c3.kafka-serverless.us-east-1.amazonaws.com:9098
+  bucket=pulsetrack-lakehouse-dev-03a28ee7
+
+── [15:58:25Z] T-25m Apply pending Glacierbase migrations ──
+ERROR: 'unset env var referenced in config: ${LAKEHOUSE_BUCKET}'
+  WARN: migrations failed or already applied (continuing)
+
+── [15:58:25Z] T-20m Sync project to EMR master via S3 ──
+  syncing source tree to s3://pulsetrack-lakehouse-dev-03a28ee7/code/
+  uploaded deps zip: 392K
+  uploaded producer tarball: 6.1M
+
+── [15:58:30Z] T-16m Create Kafka topics (sensor_readings, pharmacy_events, pulsetrack_dlq) ──
+  topic sensor_readings already exists (OK)
+  topic pharmacy_events already exists (OK)
+  topic pulsetrack_dlq already exists (OK)
+
+── [15:58:37Z] T-15m Start streaming bronze (sensor) ──
+  bronze_step_id=s-10255051Z5PU888MZ7X9
+
+── [15:58:38Z] T-14m Start streaming silver (sensor) ──
+  silver_step_id=s-06680172S59FC0MS6RMH
+
+── [15:58:39Z] T-13m Start gold fact_vital_reading ──
+  gold_fvr_step_id=s-08942043AG5V066GF7TT
+
+── [15:58:40Z] T-12m Start gold fact_vital_daily_summary ──
+  gold_fvd_step_id=s-01040183SDQFR3Y29EFR
+
+── [15:58:42Z] T-12m Wait for streams to be ACTIVE (max 5 min) ──
+  apps_running=0
+0 (target=4)
+./scripts/run_scale_test.sh: line 297: [[: 0
+0: syntax error in expression (error token is "0")
+  apps_running=0
+0 (target=4)
+./scripts/run_scale_test.sh: line 297: [[: 0
+0: syntax error in expression (error token is "0")
+  apps_running=0
+0 (target=4)
+./scripts/run_scale_test.sh: line 297: [[: 0
+0: syntax error in expression (error token is "0")
+  apps_running=0
+0 (target=4)
+./scripts/run_scale_test.sh: line 297: [[: 0
+0: syntax error in expression (error token is "0")
+  apps_running=0
+0 (target=4)
+./scripts/run_scale_test.sh: line 297: [[: 0
+0: syntax error in expression (error token is "0")
+  apps_running=0
+0 (target=4)
+./scripts/run_scale_test.sh: line 297: [[: 0
+0: syntax error in expression (error token is "0")
+  apps_running=0
+0 (target=4)
+./scripts/run_scale_test.sh: line 297: [[: 0
+0: syntax error in expression (error token is "0")
