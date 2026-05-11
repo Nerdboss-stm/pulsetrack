@@ -45,7 +45,7 @@ from metrics import (  # noqa: E402
 )
 from schemas.registry import (  # noqa: E402
     get_avro_serializer,
-    register_all_schemas,
+    register_schemas_for_environment,  # routes to Confluent SR (local) or Glue SR (cloud)
 )
 from streaming.kafka_helpers import apply_msk_auth  # noqa: E402
 from utils.retry import retry  # noqa: E402
@@ -278,7 +278,9 @@ class OpenFDAProducer:
 
 def main():
     start_metrics_server(settings.metrics_port_openfda)
-    register_all_schemas()
+    # Routes to Confluent SR locally and Glue Schema Registry in cloud.
+    # In cloud, no HTTP call to a registry endpoint — uses boto3.glue.
+    register_schemas_for_environment()
     OpenFDAProducer().run()
 
 

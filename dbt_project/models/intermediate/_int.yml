@@ -1,0 +1,262 @@
+version: 2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Intermediate models — column-level documentation + tests.
+#
+# Intermediate layer is `materialized='ephemeral'` by project default — these
+# CTEs are compiled into downstream marts. Documenting them anyway because:
+#   1. Lineage tooling (dbt-docs, Elementary) needs the column docs to render
+#      the DAG with meaningful tooltips.
+#   2. New engineers should understand the intermediate semantics without
+#      reading the SQL.
+#   3. Tests still apply when compiled into a downstream materialized model —
+#      a test on an ephemeral table just runs at the consumer.
+# ─────────────────────────────────────────────────────────────────────────────
+
+models:
+
+  - name: int_vital_anomaly_flags
+    description: |
+      Per-(patient × metric × day) anomaly flag computation. Joins
+      int_vital_daily_agg with the metric_normal_ranges seed to produce
+      five boolean flags (high, low, critical_high, critical_low,
+      any_anomaly) plus an anomaly_severity_score. Powers the daily
+      health summary and the clinical outcome correlation models.
+    columns:
+      - name: patient_key
+        description: SHA-256 over patient_email. FK to dim_patient.
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_patient'), field: patient_key, severity: warn }
+      - name: metric_name
+        description: One of metric_normal_ranges.metric_name.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('metric_normal_ranges')
+              field: metric_name
+      - name: event_date
+        description: Date the readings were taken.
+        tests: [not_null]
+      - name: valid_reading_count
+        description: Count of valid (in-range) readings on this day.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 0 }
+      - name: invalid_reading_count
+        description: Count of invalid (out-of-range) readings on this day.
+      - name: avg_value
+        description: Day-average over valid readings.
+      - name: min_value
+        description: Day-minimum over valid readings.
+      - name: max_value
+        description: Day-maximum over valid readings.
+      - name: stddev_value
+        description: Day-stddev over valid readings.
+      - name: normal_min
+        description: Lower clinical-normal bound for this metric.
+        tests: [not_null]
+      - name: normal_max
+        description: Upper clinical-normal bound for this metric.
+        tests: [not_null]
+      - name: critical_min
+        description: Lower plausibility bound (below = critical).
+        tests: [not_null]
+      - name: critical_max
+        description: Upper plausibility bound (above = critical).
+        tests: [not_null]
+      - name: metric_category
+        description: Metric category from seed.
+        tests:
+          - not_null
+          - accepted_values: { values: ['vital', 'sleep', 'activity', 'metabolic'] }
+      - name: is_high_anomaly
+        description: TRUE if avg_value > normal_max.
+        tests: [not_null]
+      - name: is_low_anomaly
+        description: TRUE if avg_value < normal_min.
+        tests: [not_null]
+      - name: is_critical_high
+        description: TRUE if max_value > critical_max.
+        tests: [not_null]
+      - name: is_critical_low
+        description: TRUE if min_value < critical_min.
+        tests: [not_null]
+      - name: any_anomaly
+        description: TRUE if any of the four anomaly flags are TRUE.
+        tests: [not_null]
+      - name: anomaly_severity_score
+        description: Normal-range-width distance from normal (0 = within normal).
+
+  - name: int_patient_medication_active
+    description: |
+      Per-(patient × active medication × episode) row covering current
+      ongoing prescriptions. Built on int_medication_timeline and filtered
+      to is_ongoing=TRUE. Adds episode-level durations and patient-level
+      aggregates that downstream dim_medication + medication_adherence
+      depend on.
+    columns:
+      - name: active_medication_key
+        description: SHA-256 over (patient_key, medication_key, episode_seq). PK.
+        tests: [not_null, unique]
+      - name: patient_key
+        description: SHA-256 over patient_email. FK to dim_patient.
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_patient'), field: patient_key, severity: warn }
+      - name: medication_key
+        description: FK to dim_medication.
+        tests: [not_null]
+      - name: medication_name
+        description: Generic medication name.
+        tests: [not_null]
+      - name: drug_class
+        description: Therapeutic class. FK to dim_drug_class.
+        tests: [not_null]
+      - name: rxnorm_code
+        description: RxNorm concept identifier.
+      - name: start_date
+        description: When the patient started taking this medication.
+        tests: [not_null]
+      - name: end_date
+        description: When the prescription ended; NULL for ongoing.
+      - name: effective_end_date
+        description: end_date or today if active.
+        tests: [not_null]
+      - name: daily_dose_mg
+        description: Daily dosage in milligrams.
+      - name: episode_seq
+        description: Episode number within (patient, medication). 1 = first.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 1 }
+      - name: days_since_prior_episode
+        description: Gap in days from prior episode of the same medication.
+      - name: is_re_prescription
+        description: TRUE when gap exceeds 90 days (re-prescription, not continuation).
+        tests: [not_null]
+      - name: medication_rank_within_patient
+        description: Dense rank of medication_name within this patient's list.
+      - name: current_episode_duration_days
+        description: Days from start_date to today.
+      - name: episode_total_days
+        description: Days from start_date to effective_end_date.
+      - name: active_medication_count
+        description: Total active medications for this patient.
+        tests: [not_null]
+      - name: active_drug_class_count
+        description: Distinct drug classes the patient is on.
+        tests: [not_null]
+      - name: re_prescription_count
+        description: Number of re-prescription episodes across the patient's medications.
+      - name: longest_current_episode_days
+        description: Longest currently-active episode duration for this patient.
+
+  - name: int_silver_quality_summary
+    description: |
+      Daily silver-layer quality summary per table. Aggregates the
+      stg_observability_monitor_runs ledger plus sensor-specific
+      validity/late-arrival rates inferred from stg_sensor_readings.
+      Grain: (run_date, table_name). Powers daily_health_summary's
+      data-confidence column and the operations dashboard.
+    columns:
+      - name: quality_summary_key
+        description: SHA-256 surrogate over (run_date, table_name). Primary key.
+        tests: [not_null, unique]
+      - name: run_date
+        description: Date the monitor ran.
+        tests: [not_null]
+      - name: table_name
+        description: Silver table evaluated.
+        tests: [not_null]
+      - name: monitor_run_count
+        description: Number of monitor runs against this table on this date.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 1 }
+      - name: rows_evaluated
+        description: Total rows evaluated across all runs.
+      - name: rows_failed
+        description: Total rows that failed at least one expectation.
+      - name: expectations_run
+        description: Total expectations executed.
+      - name: expectations_failed
+        description: Total expectations that failed.
+      - name: avg_expectation_pass_rate
+        description: Average pass rate across the day's runs.
+        tests:
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 1, severity: warn }
+      - name: healthy_run_count
+        description: Number of runs flagged is_healthy=TRUE.
+      - name: avg_duration_seconds
+        description: Average monitor duration for SLA tracking.
+      - name: reading_count
+        description: Sensor reading count on this day. NULL for non-sensor tables.
+      - name: valid_count
+        description: Valid sensor reading count.
+      - name: late_arrival_count
+        description: Late-arriving sensor reading count.
+      - name: low_battery_count
+        description: Readings with battery_pct < 20.
+      - name: validity_rate
+        description: Valid / Total sensor readings.
+        tests:
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 1, severity: warn }
+      - name: late_arrival_rate
+        description: Late / Total sensor readings.
+        tests:
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 1, severity: warn }
+      - name: null_rate_estimate
+        description: Estimated rows_failed / rows_evaluated. Proxy for null %.
+
+  - name: int_device_battery_trends
+    description: |
+      Per-(device × day) battery trend with 7-day moving average and
+      day-over-day delta. Distinguishes single-day battery dips (device
+      not worn) from sustained downward trends (battery health issue).
+      Used by device_reliability and daily_health_summary.
+    columns:
+      - name: device_battery_day_key
+        description: SHA-256 surrogate (device_id, event_date). Primary key.
+        tests: [not_null, unique]
+      - name: device_id
+        description: Source device identifier.
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_device'), field: device_id, severity: warn }
+      - name: device_type
+        description: Device family.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['smartwatch', 'chest_strap', 'sleep_ring', 'blood_pressure_cuff']
+      - name: firmware_version
+        description: Firmware at the reading time.
+        tests: [not_null]
+      - name: event_date
+        description: Date of the readings.
+        tests: [not_null]
+      - name: avg_battery_pct
+        description: Mean battery percentage for the day.
+        tests:
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 100, severity: warn }
+      - name: min_battery_pct
+        description: Minimum battery percentage observed.
+      - name: max_battery_pct
+        description: Maximum battery percentage observed.
+      - name: reading_count
+        description: Number of battery readings for this device on this day.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 1 }
+      - name: low_battery_reading_count
+        description: Number of readings with battery_pct < 20.
+      - name: battery_7d_moving_avg
+        description: 7-day trailing moving average of daily mean battery.
+      - name: battery_dod_delta
+        description: avg_battery_pct minus prior day's avg.
+      - name: battery_7d_delta
+        description: 7-day delta on the moving average. Negative = trending down.
+      - name: is_battery_at_risk
+        description: TRUE when 7d delta < -10 AND 7d moving avg < 50.
+        tests: [not_null]

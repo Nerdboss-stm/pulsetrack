@@ -35,7 +35,7 @@ from metrics import (  # noqa: E402
     records_processed,
     start_metrics_server,
 )
-from schemas.registry import get_avro_serializer, register_all_schemas  # noqa: E402
+from schemas.registry import get_avro_serializer, register_schemas_for_environment  # noqa: E402
 from streaming.kafka_helpers import apply_msk_auth  # noqa: E402
 
 log = get_logger(__name__)
@@ -78,7 +78,9 @@ def _on_delivery(err, msg):
 class WhoopProducer:
     def __init__(self, client: Optional[WhoopClient] = None):
         self.client = client or WhoopClient()
-        register_all_schemas()
+        # Cloud → Glue Schema Registry via boto3 (no HTTP to localhost:8081).
+        # Local → Confluent Schema Registry on docker-compose.
+        register_schemas_for_environment()
         subject = f"{settings.kafka_topic_sensor}-value"
         self.serializer = get_avro_serializer(subject)
         self.key_serializer = StringSerializer()

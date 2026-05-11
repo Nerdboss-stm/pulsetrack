@@ -1,0 +1,639 @@
+version: 2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# marts/analytics — derived gold-layer analytics tables.
+#
+# These models sit downstream of core dims/facts and produce wide tables
+# tuned for BI dashboards, ML feature stores, and cohort analyses. Discipline
+# matches marts/core: 100% column documentation + at least one test per
+# column.
+# ─────────────────────────────────────────────────────────────────────────────
+
+models:
+
+  - name: vital_trend_analysis
+    description: |
+      7/14/30-day rolling windows for each (patient × metric × day). Powers
+      BI line charts showing whether a patient's vital is trending up vs
+      their personal baseline. Z-score column relative to the 30-day
+      rolling baseline drives the anomaly_investigation downstream model.
+    columns:
+      - name: patient_key
+        description: FK to dim_patient.
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_patient'), field: patient_key, severity: warn }
+      - name: metric_key
+        description: FK to dim_metric.
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_metric'), field: metric_key, severity: warn }
+      - name: metric_name
+        description: Metric name.
+        tests: [not_null]
+      - name: date_key
+        description: FK to dim_date.
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_date'), field: date_key, severity: warn }
+      - name: event_date
+        description: Event date.
+        tests: [not_null]
+      - name: daily_avg
+        description: avg_value from the daily-aggregate model.
+      - name: rolling_7d_avg
+        description: 7-day trailing average.
+      - name: rolling_14d_avg
+        description: 14-day trailing average.
+      - name: rolling_30d_avg
+        description: 30-day trailing average.
+      - name: rolling_30d_stddev
+        description: 30-day trailing standard deviation.
+      - name: z_score_30d
+        description: (daily_avg − rolling_30d_avg) / rolling_30d_stddev.
+      - name: day_over_day_change
+        description: Difference vs previous day.
+      - name: week_over_week_change
+        description: Difference vs 7 days ago.
+      - name: dbt_loaded_at
+        description: When this row was loaded.
+        tests: [not_null]
+
+  - name: identity_resolution_kpis
+    description: |
+      Per-(identifier_type × link_status × link_method) KPI breakdown plus
+      a rollup row carrying overall_link_rate. Mirrors the runtime
+      data_quality/identity_metrics.py output but as a dbt mart so BI tools
+      can chart link-rate over time.
+    columns:
+      - name: row_kind
+        description: breakdown (one row per type/status/method) or rollup (a single bridge-wide row).
+        tests:
+          - not_null
+          - accepted_values: { values: ['breakdown', 'rollup'] }
+      - name: identifier_type
+        description: External identifier type.
+        tests:
+          - accepted_values:
+              values: ['email', 'hospital_mrn', 'device_account_id', 'fda_report_id']
+              quote: true
+      - name: link_status
+        description: linked, pending_registration, pending_email_linkage.
+      - name: link_method
+        description: ehr_direct, transitive_email, whoop_api_account, pharmacy_email.
+      - name: row_count
+        description: Row count for the breakdown / total for the rollup.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 0 }
+      - name: unique_patients
+        description: Distinct patient_keys in the slice.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 0 }
+      - name: overall_link_rate
+        description: NULL on breakdown rows; total_linked/total_bridge_rows on rollup.
+        tests:
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 1, severity: warn }
+      - name: dbt_loaded_at
+        description: When this row was loaded.
+        tests: [not_null]
+
+  - name: patient_health_360
+    description: |
+      Wide patient view powering the patient-360 dashboard. One row per
+      patient_key with everything a clinician needs at a glance: conditions
+      (primary list), medications (active list), recent adverse events,
+      30-day vital averages, and sensor coverage.
+    columns:
+      - name: patient_key
+        description: FK to dim_patient. Primary key.
+        tests:
+          - not_null
+          - unique
+          - relationships: { to: ref('dim_patient'), field: patient_key }
+      - name: patient_email_hash
+        description: PII-masked email.
+        tests: [not_null]
+      - name: health_complexity_bucket
+        description: high / medium / low / none.
+        tests:
+          - accepted_values: { values: ['high', 'medium', 'low', 'none'] }
+      - name: health_complexity_score
+        description: Numeric health-complexity score.
+        tests: [not_null]
+      - name: total_conditions
+        description: Lifetime EHR condition count.
+        tests: [not_null]
+      - name: active_conditions
+        description: Active EHR condition count.
+        tests: [not_null]
+      - name: primary_condition_list
+        description: Comma-separated primary condition names.
+      - name: highest_condition_severity
+        description: Max severity_default across all conditions.
+      - name: total_medications
+        description: Lifetime medication count.
+        tests: [not_null]
+      - name: active_medications
+        description: Active medication count.
+        tests: [not_null]
+      - name: distinct_drug_classes
+        description: Distinct drug classes.
+        tests: [not_null]
+      - name: active_medication_list
+        description: Comma-separated active medication names.
+      - name: total_pharmacy_fills
+        description: Total FDA-reported fills.
+        tests: [not_null]
+      - name: total_adverse_events_lifetime
+        description: Lifetime adverse-event count.
+      - name: adverse_events_last_90d
+        description: Adverse events in the last 90 days.
+      - name: max_severity_90d
+        description: Maximum adverse-event score in the last 90 days.
+      - name: avg_hr_30d
+        description: 30-day mean heart rate.
+      - name: max_hr_30d
+        description: 30-day max heart rate.
+      - name: min_spo2_30d
+        description: 30-day min SpO2.
+      - name: max_bp_systolic_30d
+        description: 30-day max systolic BP.
+      - name: total_steps_30d
+        description: 30-day total step count.
+      - name: device_account_count
+        description: Distinct device-account pairings.
+        tests: [not_null]
+      - name: device_count
+        description: Distinct devices.
+        tests: [not_null]
+      - name: most_recent_firmware
+        description: Latest firmware seen across the patient's devices.
+      - name: first_sensor_event
+        description: Earliest sensor event timestamp.
+      - name: last_sensor_event
+        description: Latest sensor event timestamp.
+      - name: dbt_loaded_at
+        description: When this row was loaded.
+        tests: [not_null]
+
+  - name: anomaly_investigation
+    description: |
+      One row per anomalous vital reading with full patient context. Drives
+      the incident-review dashboard. An anomaly is any reading classified
+      'critical' OR with a 30-day z-score above the vital_anomaly_zscore
+      project var. Joins to dim_patient for health-complexity context.
+    columns:
+      - name: reading_metric_key
+        description: SHA-256 surrogate of the underlying fact_vital_reading row.
+        tests: [not_null, unique]
+      - name: patient_key
+        description: FK to dim_patient.
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_patient'), field: patient_key, severity: warn }
+      - name: metric_name
+        description: Metric name.
+        tests: [not_null]
+      - name: metric_value
+        description: Reading value.
+      - name: event_timestamp
+        description: When the reading was taken.
+        tests: [not_null]
+      - name: device_id
+        description: Source device.
+        tests: [not_null]
+      - name: firmware_version
+        description: Firmware at reading time.
+      - name: battery_pct
+        description: Battery at reading time.
+      - name: is_late_arriving
+        description: TRUE if sync-lag exceeded threshold.
+      - name: vital_status
+        description: classify_vital_range output.
+        tests:
+          - not_null
+          - accepted_values: { values: ['normal', 'warning', 'critical', 'unknown'] }
+      - name: event_date
+        description: Date of the reading.
+      - name: rolling_30d_avg
+        description: 30-day rolling average at the time of the reading.
+      - name: rolling_30d_stddev
+        description: 30-day rolling stddev.
+      - name: z_score_30d
+        description: Z-score vs 30-day baseline.
+      - name: is_z_score_anomaly
+        description: TRUE when |z_score_30d| > vital_anomaly_zscore.
+        tests: [not_null]
+      - name: health_complexity_bucket
+        description: Patient health-complexity bucket from dim_patient.
+      - name: health_complexity_score
+        description: Patient health-complexity score.
+      - name: active_conditions
+        description: Active condition count at the patient level.
+      - name: active_medications
+        description: Active medication count at the patient level.
+      - name: adverse_event_count
+        description: Lifetime adverse-event count for the patient.
+      - name: severity_label
+        description: CRITICAL_ANOMALY / CRITICAL / STATISTICAL_ANOMALY / WARNING.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['CRITICAL_ANOMALY', 'CRITICAL', 'STATISTICAL_ANOMALY', 'WARNING']
+      - name: dbt_loaded_at
+        description: When this row was loaded.
+        tests: [not_null]
+
+  - name: device_reliability
+    description: |
+      Per-(device_type × firmware_version) reliability scoreboard. Captures
+      invalid_reading_rate, late_arrival_rate, low_battery_rate, and a
+      composite_failure_rate. Used by ops to decide firmware rollback or
+      device recall decisions.
+    columns:
+      - name: device_type
+        description: Device family.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['smartwatch', 'chest_strap', 'sleep_ring', 'blood_pressure_cuff']
+      - name: firmware_version
+        description: Firmware version string.
+        tests: [not_null]
+      - name: total_readings
+        description: Total readings observed for this (device_type, firmware).
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 1 }
+      - name: distinct_devices
+        description: Distinct device_ids on this firmware.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 1 }
+      - name: invalid_count
+        description: Readings with is_valid = FALSE.
+        tests: [not_null]
+      - name: invalid_reading_rate
+        description: invalid_count / total_readings.
+        tests:
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 1, severity: warn }
+      - name: late_arrival_count
+        description: Readings with is_late_arriving = TRUE.
+        tests: [not_null]
+      - name: late_arrival_rate
+        description: late_arrival_count / total_readings.
+        tests:
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 1, severity: warn }
+      - name: low_battery_count
+        description: Readings with battery_pct < 20.
+        tests: [not_null]
+      - name: low_battery_rate
+        description: low_battery_count / total_readings.
+        tests:
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 1, severity: warn }
+      - name: composite_failure_rate
+        description: (invalid + late) / total. Composite proxy of reliability.
+        tests:
+          - dbt_utils.accepted_range: { min_value: 0, severity: warn }
+      - name: dbt_loaded_at
+        description: When this row was loaded.
+        tests: [not_null]
+
+  - name: daily_health_summary
+    description: |
+      Wide per-(patient × day) summary table. The one-row-per-patient-day
+      backbone of the BI dashboard: vital averages, anomaly counts, active
+      medications, same-day adverse events, and data-quality confidence.
+      Joins int_vital_daily_agg, int_vital_anomaly_flags,
+      int_patient_medication_active, stg_pharmacy_fills, and
+      int_silver_quality_summary.
+    columns:
+      - name: daily_summary_key
+        description: SHA-256 over (patient_key, event_date). Primary key.
+        tests: [not_null, unique]
+      - name: patient_key
+        description: FK to dim_patient.
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_patient'), field: patient_key, severity: warn }
+      - name: event_date
+        description: Date of the summary.
+        tests: [not_null]
+      - name: date_key
+        description: FK to dim_date.
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_date'), field: date_key, severity: warn }
+      - name: avg_heart_rate
+        description: Day-average heart rate.
+      - name: avg_spo2
+        description: Day-average SpO2.
+      - name: avg_hrv
+        description: Day-average HRV.
+      - name: avg_respiration_rate
+        description: Day-average respiration rate.
+      - name: avg_bp_systolic
+        description: Day-average systolic BP.
+      - name: avg_bp_diastolic
+        description: Day-average diastolic BP.
+      - name: avg_skin_temp
+        description: Day-average skin temperature.
+      - name: avg_blood_glucose
+        description: Day-average blood glucose.
+      - name: total_valid_readings
+        description: Total valid sensor readings on this day across all metrics.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 0 }
+      - name: total_invalid_readings
+        description: Total invalid sensor readings.
+      - name: high_anomaly_count
+        description: Metrics with avg above normal_max.
+        tests: [not_null]
+      - name: low_anomaly_count
+        description: Metrics with avg below normal_min.
+        tests: [not_null]
+      - name: critical_high_count
+        description: Metrics with max above critical_max.
+        tests: [not_null]
+      - name: critical_low_count
+        description: Metrics with min below critical_min.
+        tests: [not_null]
+      - name: any_anomaly_count
+        description: Any of the four anomaly types — short-circuit OR.
+        tests: [not_null]
+      - name: max_anomaly_severity
+        description: Maximum normalized severity score across the day.
+      - name: active_medication_count
+        description: Active medications for the patient.
+        tests: [not_null]
+      - name: active_drug_class_count
+        description: Distinct active drug classes.
+        tests: [not_null]
+      - name: active_medication_list
+        description: Comma-separated active medication names.
+      - name: pharmacy_fill_count
+        description: Pharmacy fills recorded with event_timestamp on this date.
+        tests: [not_null]
+      - name: adverse_event_count
+        description: Same-day adverse events (severity != none).
+        tests: [not_null]
+      - name: max_adverse_event_score
+        description: Same-day max adverse-event severity score (0–4).
+      - name: sensor_validity_rate
+        description: Sensor validity rate from the silver quality summary.
+      - name: expectation_pass_rate
+        description: GX expectation pass rate from the silver quality summary.
+      - name: dbt_loaded_at
+        description: When this row was loaded.
+        tests: [not_null]
+
+  - name: clinical_outcome_correlation
+    description: |
+      Correlates 30-day pre-condition vital trends with condition outcomes.
+      One row per (patient × condition × metric). Captures prior_30d_avg,
+      stddev, and trend_delta_late_minus_early so analysts can spot
+      "HRV-drop → CHF flare" patterns. Trend label is rule-based; real
+      correlation analytics live in the ML repo.
+    columns:
+      - name: correlation_key
+        description: SHA-256 surrogate. Primary key.
+        tests: [not_null, unique]
+      - name: patient_key
+        description: FK to dim_patient.
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_patient'), field: patient_key, severity: warn }
+      - name: icd10_code
+        description: ICD-10 code of the condition.
+        tests: [not_null]
+      - name: condition_name
+        description: Human-readable condition name.
+        tests: [not_null]
+      - name: severity_default
+        description: Default severity per icd10_codes.
+      - name: condition_first_active_date
+        description: First date the condition was active.
+        tests: [not_null]
+      - name: metric_name
+        description: Metric whose trend is correlated.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('metric_normal_ranges')
+              field: metric_name
+              severity: warn
+      - name: observation_days
+        description: Days of vital data in the 30-day pre-window.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 1, max_value: 30 }
+      - name: prior_30d_avg
+        description: Mean vital value over the 30-day window.
+      - name: prior_30d_stddev
+        description: Stddev of vital values in the window.
+      - name: trend_delta_late_minus_early
+        description: Mean(last 7d) − Mean(first 7d). Slope proxy.
+      - name: trend_label
+        description: trending_up / trending_down / stable / insufficient_data.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['trending_up', 'trending_down', 'stable', 'insufficient_data']
+      - name: window_coverage_rate
+        description: observation_days / 30.
+        tests:
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 1 }
+      - name: dbt_loaded_at
+        description: When this row was loaded.
+        tests: [not_null]
+
+  - name: medication_adherence
+    description: |
+      Per-(patient × medication) adherence scorecard. Uses the Proportion of
+      Days Covered (PDC) metric: total_days_supplied / prescription_window.
+      Adherence band uses the clinical-standard 0.80 / 0.50 break-points.
+      Inputs are stg_pharmacy_fills (fill events) and stg_ehr_medications
+      (prescription window).
+    columns:
+      - name: adherence_key
+        description: SHA-256 surrogate over (patient_key, drug_class, drug_name). Primary key.
+        tests: [not_null, unique]
+      - name: patient_key
+        description: FK to dim_patient.
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_patient'), field: patient_key, severity: warn }
+      - name: drug_name
+        description: Medication name.
+        tests: [not_null]
+      - name: drug_class
+        description: Drug class.
+        tests: [not_null]
+      - name: first_prescription_date
+        description: Earliest prescription start_date.
+      - name: last_prescription_date
+        description: Latest prescription end_date or today.
+      - name: prescription_count
+        description: Number of distinct prescriptions in EHR.
+      - name: fill_count
+        description: Number of fill events.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 0 }
+      - name: total_units_dispensed
+        description: Sum of fill_quantity across fills.
+        tests: [not_null]
+      - name: total_days_supplied
+        description: Sum of days_supply across fills.
+        tests: [not_null]
+      - name: first_fill_date
+        description: Earliest fill date.
+      - name: last_fill_date
+        description: Latest fill date.
+      - name: avg_days_supply_per_fill
+        description: Mean days_supply per fill event.
+      - name: prescription_window_days
+        description: last_prescription_date − first_prescription_date + 1.
+      - name: pdc_score
+        description: Proportion of Days Covered, capped at 1.0.
+        tests:
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 1, severity: warn }
+      - name: adherence_band
+        description: Clinical-standard adherence classification.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['adherent', 'partial', 'non_adherent', 'no_fills', 'no_prescription']
+      - name: dbt_loaded_at
+        description: When this row was loaded.
+        tests: [not_null]
+
+  - name: patient_cohort_segmentation
+    description: |
+      Rule-based patient cohort assignment. NOT k-means or other ML — the
+      goal is clinically-interpretable cohorts BI tools can filter by.
+      Mutually-exclusive cohort_bucket field (first-match-wins ladder) plus
+      a cohort_risk_rank ordinal for sorting. Real clustering lives in the
+      ML repo; this is the auditable, code-reviewable companion.
+    columns:
+      - name: cohort_assignment_key
+        description: SHA-256 over patient_key. Primary key.
+        tests: [not_null, unique]
+      - name: patient_key
+        description: FK to dim_patient.
+        tests:
+          - not_null
+          - unique
+          - relationships: { to: ref('dim_patient'), field: patient_key, severity: warn }
+      - name: active_conditions
+        description: Active condition count from int_patient_enriched.
+        tests: [not_null]
+      - name: active_medications
+        description: Active medication count from int_patient_enriched.
+        tests: [not_null]
+      - name: adverse_event_count
+        description: Lifetime adverse-event count.
+        tests: [not_null]
+      - name: health_complexity_score
+        description: Composite complexity score from int_patient_enriched.
+        tests: [not_null]
+      - name: active_condition_codes
+        description: Comma-separated ICD-10 codes of active conditions.
+      - name: active_drug_classes
+        description: Comma-separated active drug classes.
+      - name: recent_days_with_data
+        description: Distinct days with sensor data in the last 30 days.
+      - name: approx_daily_steps
+        description: Approximate daily step count (steps_since_last × 96).
+      - name: cohort_bucket
+        description: Mutually-exclusive cohort label.
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - 'high_acuity_polypharmacy'
+                - 'cardiovascular_focus'
+                - 'diabetic_focus'
+                - 'respiratory_focus'
+                - 'mental_health_focus'
+                - 'stable_chronic'
+                - 'healthy_active'
+                - 'low_engagement'
+                - 'unclassified'
+      - name: cohort_risk_rank
+        description: Ordinal risk rank 0–5.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 5 }
+      - name: dbt_loaded_at
+        description: When this row was loaded.
+        tests: [not_null]
+
+  - name: whoop_personal_health
+    description: |
+      The operator's own WHOOP data, isolated by source_type='whoop_api'.
+      One row per event_date with all WHOOP-emitted metrics pivoted wide
+      (heart rate, HRV, SpO2, respiration, skin temp, steps, energy,
+      sleep_stage). Includes a recovery_proxy_score that approximates
+      WHOOP's proprietary recovery metric.
+    columns:
+      - name: whoop_day_key
+        description: SHA-256 over event_date. Primary key.
+        tests: [not_null, unique]
+      - name: event_date
+        description: Date the WHOOP readings were taken.
+        tests: [not_null, unique]
+      - name: date_key
+        description: FK to dim_date.
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_date'), field: date_key, severity: warn }
+      - name: avg_heart_rate
+        description: Day-average heart rate.
+      - name: max_heart_rate
+        description: Day-max heart rate (separate metric in WHOOP).
+      - name: avg_hrv
+        description: Day-average HRV.
+      - name: avg_spo2
+        description: Day-average SpO2.
+      - name: avg_respiration_rate
+        description: Day-average respiration rate.
+      - name: avg_skin_temp
+        description: Day-average skin temperature.
+      - name: total_steps
+        description: Day-total step count.
+      - name: total_energy_kj
+        description: Day-total energy expenditure (kJ).
+      - name: avg_sleep_stage
+        description: Day-average sleep stage value (0–4 enum).
+      - name: total_readings
+        description: Total WHOOP readings on this day.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 1 }
+      - name: valid_readings
+        description: Count of readings flagged is_valid=TRUE.
+        tests: [not_null]
+      - name: validity_rate
+        description: valid_readings / total_readings.
+        tests:
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 1, severity: warn }
+      - name: avg_battery_pct
+        description: Day-average battery percentage.
+      - name: avg_sync_latency_seconds
+        description: Day-average sync latency.
+      - name: distinct_devices
+        description: Distinct device_ids contributing to this day.
+        tests: [not_null]
+      - name: most_recent_firmware
+        description: Latest firmware string observed.
+      - name: recovery_proxy_score
+        description: 0–100 WHOOP-style recovery proxy (NOT the proprietary metric).
+        tests:
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 100, severity: warn }
+      - name: dbt_loaded_at
+        description: When this row was loaded.
+        tests: [not_null]

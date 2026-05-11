@@ -136,3 +136,17 @@ module "secrets" {
 
   depends_on = [module.iam]
 }
+
+# ── Glue Schema Registry ───────────────────────────────────────────────────
+# Backs the Avro schemas for sensor_readings + pharmacy_events topics.
+# Replaces the local Confluent Schema Registry in cloud environments.
+# IAM read+register-version policy auto-attached to the EMR EC2 role.
+module "schema_registry" {
+  source = "./modules/schema_registry"
+
+  name_prefix       = local.name_prefix
+  environment       = var.environment
+  emr_ec2_role_name = module.iam.emr_ec2_role_name
+
+  depends_on = [module.iam]
+}

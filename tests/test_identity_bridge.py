@@ -39,7 +39,7 @@ def test_build_ehr_identities_unions_conditions_and_medications(spark, tmp_lakeh
     )
 
     _seed_silver_ehr(spark, tmp_lakehouse)
-    out = build_ehr_identities(spark).collect()
+    out = build_ehr_identities(spark, fmt="delta").collect()
     emails = {r["patient_email"] for r in out}
     assert emails == {"alice@example.com", "bob@example.com"}
     assert all(r["patient_key"] is not None for r in out)
@@ -53,7 +53,7 @@ def test_build_ehr_bridge_rows_emits_two_rows_per_patient(spark, tmp_lakehouse):
     )
 
     _seed_silver_ehr(spark, tmp_lakehouse)
-    bridge = build_ehr_bridge_rows(build_ehr_identities(spark))
+    bridge = build_ehr_bridge_rows(build_ehr_identities(spark, fmt="delta"))
     rows = bridge.collect()
     types = sorted(r["identifier_type"] for r in rows)
     assert types == ["email", "email", "hospital_mrn", "hospital_mrn"]
@@ -79,9 +79,9 @@ def test_device_bridge_links_via_email(spark, tmp_lakehouse):
         ],
     )
     # Phase 1: write EHR bridge rows
-    load_bridge(build_ehr_bridge_rows(build_ehr_identities(spark)), spark)
+    load_bridge(build_ehr_bridge_rows(build_ehr_identities(spark, fmt="delta")), spark, fmt="delta")
     # Phase 2: device rows look up email in bridge
-    device_rows = build_device_bridge_rows(spark).collect()
+    device_rows = build_device_bridge_rows(spark, fmt="delta").collect()
     by_id = {r["identifier_value"]: r for r in device_rows}
     assert by_id["acct_known"]["link_status"] == "linked"
     assert by_id["acct_known"]["match_method"] == "exact_email_match"
@@ -100,10 +100,10 @@ def test_load_bridge_is_idempotent(spark, tmp_lakehouse):
     )
 
     _seed_silver_ehr(spark, tmp_lakehouse)
-    bridge_rows = build_ehr_bridge_rows(build_ehr_identities(spark))
-    load_bridge(bridge_rows, spark)
+    bridge_rows = build_ehr_bridge_rows(build_ehr_identities(spark, fmt="delta"))
+    load_bridge(bridge_rows, spark, fmt="delta")
     n1 = spark.read.format("delta").load(settings.silver_identity_bridge).count()
-    load_bridge(bridge_rows, spark)
+    load_bridge(bridge_rows, spark, fmt="delta")
     n2 = spark.read.format("delta").load(settings.silver_identity_bridge).count()
     assert n1 == n2  # MERGE on (identifier_type, identifier_value)
 

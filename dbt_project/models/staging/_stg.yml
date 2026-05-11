@@ -310,3 +310,213 @@ models:
       - name: is_resolved
         description: Derived. patient_key IS NOT NULL AND link_status = 'linked'.
         tests: [not_null]
+
+  - name: stg_ehr_lab_results
+    description: |
+      Staging view over silver ``ehr_lab_results``. The canonical LOINC-coded
+      lab-result stream emitted by the FHIR producer's Observation resources.
+      Adds ``lab_result_key`` (SHA-256 over lab_result_id), patient_key,
+      ``is_abnormal`` (derived from reference range), and turnaround_hours.
+      Will replace the condition-as-lab proxy currently powering fact_lab_result.
+    columns:
+      - name: lab_result_key
+        description: SHA-256 surrogate over lab_result_id. Primary key for fact joins.
+        tests: [not_null, unique]
+      - name: patient_key
+        description: SHA-256 over patient_email. FK to dim_patient.
+        tests: [not_null]
+      - name: lab_result_id
+        description: Per-result unique identifier from the EHR source.
+        tests: [not_null, unique]
+      - name: patient_email
+        description: Patient identifier; primary linkage key.
+        tests: [not_null]
+      - name: mrn
+        description: Hospital Medical Record Number.
+      - name: loinc_code
+        description: LOINC observation code.
+        tests: [not_null]
+      - name: test_name
+        description: Human-readable test name (HbA1c, Total Cholesterol, etc.).
+        tests: [not_null]
+      - name: test_category
+        description: Lab category — chemistry, hematology, endocrine, etc.
+      - name: result_value
+        description: Numeric lab result.
+      - name: result_unit
+        description: Unit (mg/dL, mmol/L, etc.).
+      - name: reference_min
+        description: Lower bound of the LOINC reference range. NULL when not available.
+      - name: reference_max
+        description: Upper bound of the LOINC reference range. NULL when not available.
+      - name: result_status
+        description: Lab-result lifecycle state.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['final', 'preliminary', 'corrected', 'cancelled']
+      - name: collected_at
+        description: When the specimen was collected.
+        tests: [not_null]
+      - name: resulted_at
+        description: When the lab released the result.
+      - name: recorded_at
+        description: When the EHR recorded the result.
+        tests: [not_null]
+      - name: ordering_provider_id
+        description: Identifier of the clinician that ordered the lab.
+      - name: is_abnormal
+        description: Derived. TRUE if result_value is outside reference range; NULL when range unknown.
+      - name: turnaround_hours
+        description: Derived. resulted_at − collected_at in hours.
+      - name: collected_date
+        description: Derived. Date partition for downstream marts.
+
+  - name: stg_bronze_sensor_readings
+    description: |
+      Staging view over the BRONZE ``sensor_readings`` table — raw Kafka-landed
+      events before silver applies validation. Used for lineage tracking,
+      DLQ debugging, and HIPAA-style audits. Adds ``bronze_reading_key``
+      (SHA-256 over reading_id + metric_name + ingestion_timestamp to allow
+      duplicate retention), an ingestion_latency_seconds derivation, and a
+      partition-friendly event_date.
+    columns:
+      - name: bronze_reading_key
+        description: SHA-256 surrogate (reading_id, metric_name, ingestion_timestamp). PK.
+        tests: [not_null, unique]
+      - name: reading_id
+        description: Globally unique reading identifier from the producer.
+        tests: [not_null]
+      - name: device_id
+        description: Per-device identifier.
+        tests: [not_null]
+      - name: device_type
+        description: Device family. Source enum.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['smartwatch', 'chest_strap', 'sleep_ring', 'blood_pressure_cuff']
+      - name: device_account_id
+        description: Stable user-device pairing identifier.
+        tests: [not_null]
+      - name: patient_email
+        description: Email when known at device level.
+      - name: metric_name
+        description: Source metric name (not yet validated against dim_metric at bronze).
+        tests: [not_null]
+      - name: metric_value
+        description: Numeric metric value. May be out-of-range at bronze.
+      - name: firmware_version
+        description: Format \d+\.\d+\.\d+.
+        tests: [not_null]
+      - name: battery_pct
+        description: Battery percentage 0-100. May be missing at bronze.
+      - name: event_timestamp
+        description: When the reading was taken on-device.
+        tests: [not_null]
+      - name: sync_timestamp
+        description: When the device synced.
+        tests: [not_null]
+      - name: ingestion_timestamp
+        description: When Kafka received the event.
+        tests: [not_null]
+      - name: source_type
+        description: Data lineage indicator.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['simulator', 'whoop_api', 'openfda']
+      - name: kafka_topic
+        description: Kafka topic the event landed on.
+        tests: [not_null]
+      - name: kafka_partition
+        description: Kafka partition for this event.
+        tests: [not_null]
+      - name: kafka_offset
+        description: Kafka offset within the partition.
+        tests: [not_null]
+      - name: ingestion_latency_seconds
+        description: Derived. ingestion_timestamp − event_timestamp in seconds.
+      - name: event_date
+        description: Derived. Date partition.
+
+  - name: stg_observability_monitor_runs
+    description: |
+      Staging view over the observability ``monitor_runs`` audit ledger. One
+      row per (monitor_name, run_id). Powers the per-monitor pass-rate
+      dashboards and the daily silver-quality summary. Adds
+      ``monitor_run_key`` surrogate, ``expectation_pass_rate`` derived,
+      ``duration_seconds`` derived, and a ``is_healthy`` boolean used by
+      ops alerts.
+    columns:
+      - name: monitor_run_key
+        description: SHA-256 surrogate (monitor_name, run_id). Primary key.
+        tests: [not_null, unique]
+      - name: run_id
+        description: Per-run unique identifier.
+        tests: [not_null]
+      - name: monitor_name
+        description: Logical monitor name (e.g., gx_silver_sensor_suite).
+        tests: [not_null]
+      - name: suite_name
+        description: GX expectation suite name when applicable.
+      - name: layer
+        description: Medallion layer the monitor evaluated.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['bronze', 'silver', 'gold']
+      - name: table_name
+        description: Target table the monitor evaluated.
+        tests: [not_null]
+      - name: run_status
+        description: Monitor lifecycle state.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['success', 'failure', 'skipped']
+      - name: rows_evaluated
+        description: Row count assessed by this run.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              severity: warn
+      - name: rows_failed
+        description: Row count that violated at least one expectation.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              severity: warn
+      - name: expectations_run
+        description: Total expectations executed.
+        tests: [not_null]
+      - name: expectations_failed
+        description: Count of failed expectations.
+      - name: started_at
+        description: Monitor start timestamp.
+        tests: [not_null]
+      - name: finished_at
+        description: Monitor finish timestamp.
+        tests: [not_null]
+      - name: failure_summary
+        description: Short JSON-like description of failures.
+      - name: environment
+        description: Deployment environment.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['prod', 'dev', 'local']
+      - name: expectation_pass_rate
+        description: Derived. (expectations_run − expectations_failed) / expectations_run.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              severity: warn
+      - name: duration_seconds
+        description: Derived. finished_at − started_at in seconds.
+      - name: run_date
+        description: Derived. Date partition.
+      - name: is_healthy
+        description: Derived. TRUE if run_status='success' AND expectations_failed=0.
+        tests: [not_null]

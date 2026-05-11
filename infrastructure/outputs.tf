@@ -67,3 +67,19 @@ output "secret_arns" {
   description = "Map of secret short-name → ARN, for any module needing fine-grained scoping"
   value       = module.secrets.secret_arns
 }
+
+# ── Glue Schema Registry ──────────────────────────────────────────────────
+output "glue_registry_name" {
+  description = "AWS Glue Schema Registry name. Use as PT_GLUE_REGISTRY_NAME for cloud producers."
+  value       = module.schema_registry.registry_name
+}
+
+output "glue_registry_arn" {
+  description = "ARN of the Glue Schema Registry. CloudTrail audits target this resource."
+  value       = module.schema_registry.registry_arn
+}
+
+output "glue_schema_names" {
+  description = "Map of logical name → Glue schema name (sensor_reading, pharmacy_event)."
+  value       = module.schema_registry.schema_names
+}

@@ -41,6 +41,7 @@ BRONZE_TEST_SCHEMA = StructType(
         StructField("decoded", _DECODED_SCHEMA),
         StructField("ingestion_timestamp", TimestampType()),
         StructField("is_parseable", BooleanType()),
+        StructField("kafka_timestamp", TimestampType()),
     ]
 )
 
@@ -57,6 +58,7 @@ def _bronze_row(
     return {
         "is_parseable": is_parseable,
         "ingestion_timestamp": event_ts,
+        "kafka_timestamp": event_ts,
         "decoded": {
             "reading_id": reading_id,
             "device_id": "SW-AAA-12345",

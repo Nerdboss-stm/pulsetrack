@@ -132,5 +132,57 @@ def get_avro_deserializer(
     return AvroDeserializer(client, schema_str, from_dict=from_dict)
 
 
+def register_all_schemas_glue() -> dict[str, str]:
+    """Cloud path: register every schema against AWS Glue Schema Registry.
+
+    Returns subject → schema_version_id (UUID string).
+
+    Why a parallel function instead of overloading register_all_schemas():
+      - Confluent SR returns int schema_id; Glue returns UUID schema_version_id.
+        Different types in the wire-format prefix → callers need to know which.
+      - Confluent SR uses HTTP; Glue uses boto3 + IAM. Different failure modes.
+      - Keep the local-dev (`register_all_schemas`) and cloud (`register_all_schemas_glue`)
+        paths separable so unit tests can stub each independently.
+
+    Both functions are idempotent — calling them twice has no effect (Glue's
+    GetSchemaByDefinition short-circuits the create).
+    """
+    from schemas.glue_registry import get_default_client  # lazy
+
+    client = get_default_client()
+    registered: dict[str, str] = {}
+    for subject, filename in SCHEMA_FILES.items():
+        # Glue's schema name doesn't include the "-value" suffix; strip it.
+        schema_name = subject.removesuffix("-value")
+        schema_str = load_schema_str(filename)
+        version_id = client.register_or_get_schema(schema_name, schema_str)
+        registered[subject] = version_id
+        log.info(
+            "Registered Avro schema with Glue Schema Registry",
+            extra={
+                "extra_data": {
+                    "subject": subject,
+                    "glue_schema_name": schema_name,
+                    "schema_version_id": version_id,
+                    "file": filename,
+                }
+            },
+        )
+    return registered
+
+
+def register_schemas_for_environment() -> dict[str, object]:
+    """Dispatch to the right registry based on settings.environment.
+
+    Local: Confluent Schema Registry (returns int schema_ids).
+    Cloud: AWS Glue Schema Registry (returns UUID schema_version_ids).
+
+    Returns subject → schema_id-or-version-id (heterogeneous).
+    """
+    if settings.environment == "cloud":
+        return register_all_schemas_glue()
+    return register_all_schemas()
+
+
 if __name__ == "__main__":
-    register_all_schemas()
+    register_schemas_for_environment()

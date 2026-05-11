@@ -176,11 +176,33 @@ def make_record(seq: int, num_users: int, base_ts: datetime) -> dict:
     }
 
 
-def encode_avro(record: dict, schema: dict) -> bytes:
-    """Confluent wire format. bronze decoder strips bytes 0..5 then decodes."""
+def encode_avro(record: dict, schema: dict, schema_version_id: str | None = None) -> bytes:
+    """Avro encoding with wire-format prefix.
+
+    Two wire-format prefixes supported, picked by ``schema_version_id``:
+
+      * **Confluent SR (local dev)** — when ``schema_version_id`` is None
+        OR an int. Prefix: ``\\x00 + 4-byte big-endian schema_id``. Default
+        schema_id=1 matches the local registry's first registration.
+      * **Glue Schema Registry (cloud)** — when ``schema_version_id`` is a UUID
+        string. Prefix: ``\\x03 + \\x00 + 16-byte UUID`` (Glue SR header).
+        See ``schemas/glue_registry.py:encode_glue_wire_format``.
+
+    The bronze decoder sniffs the first byte (\\x00 vs \\x03) to route to the
+    right deserializer at runtime.
+    """
     buf = io.BytesIO()
     fastavro.schemaless_writer(buf, schema, record)
-    return b"\x00" + struct.pack(">I", 1) + buf.getvalue()
+    avro_bytes = buf.getvalue()
+
+    if schema_version_id is None or isinstance(schema_version_id, int):
+        # Confluent SR wire format (default schema_id = 1 for local dev)
+        return b"\x00" + struct.pack(">I", schema_version_id or 1) + avro_bytes
+
+    # Glue SR wire format
+    from schemas.glue_registry import encode_glue_wire_format
+
+    return encode_glue_wire_format(schema_version_id, avro_bytes)
 
 
 # ── Checkpoint helpers ────────────────────────────────────────────────────

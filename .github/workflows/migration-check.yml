@@ -1,29 +1,145 @@
-name: Migration validation
+name: Migration validation + auto-apply
 
-on: [pull_request]
+# Implements the Glacierbase-inspired migration CI/CD pattern referenced in
+# the README + resume:
+#   - On PR: validate migration files (SHA-256 hash integrity, dependency graph)
+#            + dry-run (compile SQL, verify env-var injection, no real writes)
+#   - On merge to main: apply the new migrations against the dev Iceberg/Glue catalog
+#
+# Glacierbase semantics enforced:
+#   - Versioned filenames V001__..., V002__... (lexical ordering)
+#   - SHA-256 hash immutability — previously-applied migration hash checked
+#     against the state ledger; any modification → fail.
+#   - Env var injection — ${LAKEHOUSE_BUCKET}, ${GLUE_DATABASE_*} templated.
+
+on:
+  pull_request:
+    paths:
+      - 'migrations/**'
+      - '.github/workflows/migration-check.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'migrations/**'
+  workflow_dispatch:
 
 jobs:
-  migration-check:
+  # ── Validation gate (PR + push) ─────────────────────────────────────────
+  validate:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for SHA-256 immutability checks
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install pyspark==3.5.1 delta-spark==3.0.0 pydantic-settings boto3 \
+                      pydantic python-dotenv
+
+      - name: Validate migrations (SHA-256 + dependency graph + naming)
+        run: python -m migrations.cli validate
+        env:
+          LAKEHOUSE_BUCKET: pulsetrack-lakehouse-dev-03a28ee7
+          ICEBERG_CATALOG: glue_iceberg
+          GLUE_DATABASE_GOLD: pulsetrack_gold_dev
+          GLUE_DATABASE_SILVER: pulsetrack_silver_dev
+          GLUE_DATABASE_BRONZE: pulsetrack_bronze_dev
+
+  # ── Dry-run on PR (template render only; no AWS writes) ────────────────
+  dry-run:
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-      - run: pip install pyspark==3.5.1 delta-spark==3.0.0
-      - name: Validate migrations
-        run: python migrations/cli.py validate
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install pyspark==3.5.1 delta-spark==3.0.0 pydantic-settings boto3 \
+                      pydantic python-dotenv
+
+      - name: Dry-run pending migrations
+        run: python -m migrations.cli dry-run
         env:
           LAKEHOUSE_BUCKET: pulsetrack-lakehouse-dev-03a28ee7
           ICEBERG_CATALOG: glue_iceberg
           GLUE_DATABASE_GOLD: pulsetrack_gold_dev
           GLUE_DATABASE_SILVER: pulsetrack_silver_dev
           GLUE_DATABASE_BRONZE: pulsetrack_bronze_dev
-      - name: Dry-run migrations
-        run: python migrations/cli.py dry-run
+
+      - name: Comment rendered SQL on PR
+        if: always()
+        run: |
+          python -m migrations.cli plan > /tmp/plan.txt 2>&1 || true
+          echo "::group::Migration plan"
+          cat /tmp/plan.txt
+          echo "::endgroup::"
+
+  # ── Auto-apply on merge to main ─────────────────────────────────────────
+  # Real writes to the dev Iceberg/Glue catalog. AWS credentials via OIDC.
+  # Gated on the validate job — malformed migrations never reach the catalog.
+  apply:
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: dev  # GitHub-environment approval can be configured here
+    permissions:
+      id-token: write   # for AWS OIDC
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install pyspark==3.5.1 delta-spark==3.0.0 pydantic-settings boto3 \
+                      pydantic python-dotenv
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_MIGRATION_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Apply pending migrations
+        run: python -m migrations.cli run
         env:
-          LAKEHOUSE_BUCKET: pulsetrack-lakehouse-dev-03a28ee7
+          PT_AWS_ENV: dev
+          PT_ENVIRONMENT: cloud
+          LAKEHOUSE_BUCKET: ${{ secrets.LAKEHOUSE_BUCKET }}
           ICEBERG_CATALOG: glue_iceberg
           GLUE_DATABASE_GOLD: pulsetrack_gold_dev
           GLUE_DATABASE_SILVER: pulsetrack_silver_dev
           GLUE_DATABASE_BRONZE: pulsetrack_bronze_dev
+
+      - name: Record state to migration ledger
+        run: python -m migrations.cli status
+        env:
+          PT_AWS_ENV: dev
+          PT_ENVIRONMENT: cloud
+          LAKEHOUSE_BUCKET: ${{ secrets.LAKEHOUSE_BUCKET }}
+
+      - name: Notify Slack on success
+        if: success()
+        run: |
+          curl -X POST -H 'Content-Type: application/json' \
+            --data "{\"text\":\":white_check_mark: PulseTrack migrations applied: ${GITHUB_SHA::8}\"}" \
+            "${{ secrets.SLACK_MIGRATIONS_WEBHOOK }}" || true
+
+      - name: Notify Slack on failure
+        if: failure()
+        run: |
+          curl -X POST -H 'Content-Type: application/json' \
+            --data "{\"text\":\":x: PulseTrack migration FAILED on main: ${GITHUB_SHA::8} — manual rollback may be required\"}" \
+            "${{ secrets.SLACK_MIGRATIONS_WEBHOOK }}" || true

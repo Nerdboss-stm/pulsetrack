@@ -406,3 +406,261 @@ models:
         description: When the EHR recorded the result.
       - name: dbt_loaded_at
         description: When this row was loaded by dbt.
+
+  - name: dim_condition
+    description: |
+      Full ICD-10 condition dimension. One row per ICD-10 code from the
+      icd10_codes seed, enriched with the parent chapter from
+      dim_condition_category and the observed-occurrence counts from
+      stg_ehr_conditions. The dimension fact_lab_result and downstream
+      condition-aware facts join against.
+    columns:
+      - name: condition_key
+        description: SHA-256 surrogate over icd10_code. Primary key.
+        tests: [not_null, unique]
+      - name: icd10_code
+        description: ICD-10-CM diagnosis code (natural key).
+        tests:
+          - not_null
+          - unique
+          - relationships:
+              to: ref('icd10_codes')
+              field: icd10_code
+      - name: condition_name
+        description: Human-readable condition name from icd10_codes.
+        tests: [not_null]
+      - name: category_code
+        description: ICD-10 chapter range (e.g., I00-I99). FK to dim_condition_category.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_condition_category')
+              field: category_code
+              severity: warn
+      - name: category_name
+        description: Chapter name.
+      - name: icd10_chapter
+        description: Chapter number 1-22.
+        tests:
+          - dbt_utils.accepted_range: { min_value: 1, max_value: 22, severity: warn }
+      - name: category_description
+        description: One-line summary of conditions in this chapter.
+      - name: severity_default
+        description: Default severity per icd10_codes seed.
+        tests:
+          - accepted_values:
+              values: ['minimal', 'mild', 'moderate', 'severe', 'critical']
+      - name: severity_rank
+        description: Ordinal severity 0–4 derived from severity_default.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 4 }
+      - name: observation_count
+        description: Total observations of this condition across all patients.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 0 }
+      - name: distinct_patient_count
+        description: Patients with at least one observation of this condition.
+        tests: [not_null]
+      - name: active_observation_count
+        description: Observations with clinical_status='active'.
+        tests: [not_null]
+      - name: primary_observation_count
+        description: Observations flagged is_primary=TRUE.
+        tests: [not_null]
+      - name: earliest_onset_date
+        description: Earliest onset_date across all observations.
+      - name: latest_recorded_at
+        description: Most recent recorded_at across all observations.
+      - name: is_observed
+        description: TRUE when observation_count > 0.
+        tests: [not_null]
+      - name: dbt_loaded_at
+        description: When this row was loaded by dbt.
+        tests: [not_null]
+
+  - name: dim_drug_class
+    description: |
+      ATC-style drug-class dimension. One row per distinct drug_class
+      observed in EHR medications and OpenFDA pharmacy fills. Provides
+      class-level prevalence, active-prescription counts, and adverse-event
+      risk bucket. Joined by dim_medication and medication_adherence.
+    columns:
+      - name: drug_class_key
+        description: SHA-256 surrogate over drug_class. Primary key.
+        tests: [not_null, unique]
+      - name: drug_class
+        description: Therapeutic class natural key.
+        tests: [not_null, unique]
+      - name: drug_class_label
+        description: Human-readable label (underscore-stripped).
+        tests: [not_null]
+      - name: medication_count
+        description: Total medication observations in this class.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 0 }
+      - name: distinct_drug_count
+        description: Distinct medication_names in this class.
+        tests: [not_null]
+      - name: distinct_patient_count
+        description: Patients prescribed any drug in this class.
+        tests: [not_null]
+      - name: active_medication_count
+        description: Currently-active prescriptions in this class.
+        tests: [not_null]
+      - name: avg_daily_dose_mg
+        description: Average daily dose across medications in this class.
+      - name: fill_count
+        description: Total pharmacy fills observed for this class.
+        tests: [not_null]
+      - name: distinct_filled_patient_count
+        description: Patients with at least one fill in this class.
+        tests: [not_null]
+      - name: adverse_event_count
+        description: Fills with adverse_event != 'none' in this class.
+        tests: [not_null]
+      - name: max_adverse_event_score
+        description: Highest adverse_event severity score (0–4) observed.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 4 }
+      - name: risk_bucket
+        description: Composite risk classification.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['high_risk', 'moderate_risk', 'low_risk', 'no_observed_risk']
+      - name: dbt_loaded_at
+        description: When this row was loaded by dbt.
+        tests: [not_null]
+
+  - name: dim_medication
+    description: |
+      Medication dimension. One row per distinct medication_name observed
+      across the episode timeline. Encodes RxNorm + drug_class FK + lifetime
+      stats + active-prescription summary. Source: int_medication_timeline
+      + int_patient_medication_active.
+    columns:
+      - name: medication_key
+        description: SHA-256 surrogate over medication_name. Primary key.
+        tests: [not_null, unique]
+      - name: medication_name
+        description: Generic medication name (natural key).
+        tests: [not_null, unique]
+      - name: rxnorm_code
+        description: RxNorm concept identifier (one of possibly many — MIN used as tiebreaker).
+      - name: drug_class
+        description: Therapeutic class.
+        tests: [not_null]
+      - name: drug_class_key
+        description: FK to dim_drug_class.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_drug_class')
+              field: drug_class_key
+              severity: warn
+      - name: total_episode_count
+        description: Total episodes (start/end pairs) across all patients.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 1 }
+      - name: total_patient_count
+        description: Distinct patients prescribed this medication.
+        tests: [not_null]
+      - name: re_prescription_count
+        description: Episodes flagged as re-prescriptions (90+ day gap).
+      - name: first_prescribed_date
+        description: Earliest start_date across all episodes.
+      - name: most_recent_start_date
+        description: Latest start_date across all episodes.
+      - name: avg_episode_duration_days
+        description: Mean duration of an episode across all patients.
+      - name: avg_daily_dose_mg
+        description: Mean daily dose across all prescriptions.
+      - name: min_daily_dose_mg
+        description: Minimum prescribed daily dose.
+      - name: max_daily_dose_mg
+        description: Maximum prescribed daily dose.
+      - name: active_episode_count
+        description: Currently-active episodes.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 0 }
+      - name: active_patient_count
+        description: Distinct patients with an active prescription.
+        tests: [not_null]
+      - name: avg_active_episode_duration_days
+        description: Mean duration of currently-active episodes.
+      - name: has_active_prescriptions
+        description: TRUE when active_episode_count > 0.
+        tests: [not_null]
+      - name: dbt_loaded_at
+        description: When this row was loaded by dbt.
+        tests: [not_null]
+
+  - name: dim_time
+    description: |
+      Time-of-day dimension. Exactly 1,440 rows (24 hours × 60 minutes).
+      Primary key is HHMM as integer matching dim_date's YYYYMMDD pattern.
+      Captures clinical shift attributes (day/evening/night) plus
+      business-hours / overnight / round-time flags useful for ER and
+      inpatient analytics.
+    columns:
+      - name: time_key
+        description: Surrogate HHMM as integer (e.g., 09:30 → 930). Primary key.
+        tests: [not_null, unique]
+      - name: minute_of_day
+        description: 0..1439.
+        tests:
+          - not_null
+          - unique
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 1439 }
+      - name: hour_of_day
+        description: 0..23.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 23 }
+      - name: minute_of_hour
+        description: 0..59.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 59 }
+      - name: time_24h_label
+        description: 24-hour clock HH:MM label for BI.
+        tests: [not_null]
+      - name: time_12h_label
+        description: 12-hour clock HH:MM AM/PM label for BI.
+        tests: [not_null]
+      - name: quarter_hour_bucket
+        description: 00, 15, 30, or 45.
+        tests:
+          - not_null
+          - accepted_values: { values: ['00', '15', '30', '45'] }
+      - name: period_of_day
+        description: morning, afternoon, evening, or night.
+        tests:
+          - not_null
+          - accepted_values: { values: ['morning', 'afternoon', 'evening', 'night'] }
+      - name: clinical_shift
+        description: Standard 3-shift nursing label.
+        tests:
+          - not_null
+          - accepted_values: { values: ['day_shift', 'evening_shift', 'night_shift'] }
+      - name: is_business_hours
+        description: TRUE for hours 9–16.
+        tests: [not_null]
+      - name: is_overnight
+        description: TRUE for hours 22–05.
+        tests: [not_null]
+      - name: is_morning_round
+        description: TRUE for hours 6–9.
+        tests: [not_null]
+      - name: is_evening_round
+        description: TRUE for hours 18–21.
+        tests: [not_null]
+      - name: dbt_loaded_at
+        description: When this row was loaded by dbt.
+        tests: [not_null]

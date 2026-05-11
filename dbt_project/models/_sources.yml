@@ -226,3 +226,186 @@ sources:
             description: How the link was made (ehr_direct, transitive_email, whoop_api_account, pharmacy_email).
           - name: recorded_at
             description: When the bridge row was created or last updated.
+
+      - name: ehr_lab_results
+        identifier: |
+          {%- if target.type == 'duckdb' -%}
+            fixture_silver_ehr_lab_results
+          {%- else -%}
+            ehr_lab_results
+          {%- endif -%}
+        description: |
+          Cleansed EHR FHIR Observation resources representing LOINC-coded lab
+          results. One row per lab event. Authoritative source for fact_lab_result
+          once stabilized (currently the gold fact still proxies from conditions).
+        loaded_at_field: recorded_at
+        freshness:
+          warn_after: {count: 24, period: hour}
+          error_after: {count: 72, period: hour}
+        columns:
+          - name: lab_result_id
+            description: Per-result unique identifier from the EHR source.
+          - name: patient_email
+            description: Patient identifier; primary linkage key.
+          - name: mrn
+            description: Hospital Medical Record Number.
+          - name: loinc_code
+            description: LOINC observation code.
+          - name: test_name
+            description: Human-readable test name (e.g., HbA1c, Total Cholesterol).
+          - name: test_category
+            description: Lab category (chemistry, hematology, endocrine, etc.).
+          - name: result_value
+            description: Numeric lab result.
+          - name: result_unit
+            description: Unit (mg/dL, mmol/L, etc.).
+          - name: reference_min
+            description: Lower bound of the LOINC reference range.
+          - name: reference_max
+            description: Upper bound of the LOINC reference range.
+          - name: result_status
+            description: 'final | preliminary | corrected | cancelled.'
+          - name: collected_at
+            description: When the specimen was collected.
+          - name: resulted_at
+            description: When the lab released the result.
+          - name: recorded_at
+            description: When the EHR recorded the result.
+          - name: ordering_provider_id
+            description: Clinician identifier that ordered the lab.
+
+  - name: bronze
+    description: |
+      PulseTrack Bronze layer — raw Kafka-landed events before silver applies
+      validation, dedup, and range checks. Bronze is the immutable audit copy.
+
+      Catalog: ``glue_iceberg`` in production; staged into DuckDB from
+      fixture CSVs locally.
+    database: |
+      {%- if target.type == 'snowflake' -%}
+        PULSETRACK
+      {%- else -%}
+        {{ target.database | default('main') }}
+      {%- endif -%}
+    schema: |
+      {%- if target.type == 'snowflake' -%}
+        BRONZE
+      {%- else -%}
+        main_seeds
+      {%- endif -%}
+    tags: ['bronze', 'lakehouse', 'raw']
+
+    tables:
+      - name: sensor_readings
+        identifier: |
+          {%- if target.type == 'duckdb' -%}
+            fixture_bronze_sensor_readings
+          {%- else -%}
+            sensor_readings
+          {%- endif -%}
+        description: |
+          Bronze sensor readings as landed from Kafka. At-least-once semantics
+          mean duplicates are possible; silver dedups via watermark + MERGE.
+          Carries kafka_offset/partition/topic for replay and audit.
+        loaded_at_field: ingestion_timestamp
+        freshness:
+          warn_after: {count: 1, period: hour}
+          error_after: {count: 6, period: hour}
+        columns:
+          - name: reading_id
+            description: Globally unique reading identifier from the producer.
+          - name: device_id
+            description: Per-device identifier.
+          - name: device_type
+            description: Device family.
+          - name: device_account_id
+            description: Stable user-device pairing identifier.
+          - name: patient_email
+            description: Email when known at device level.
+          - name: metric_name
+            description: Source metric name.
+          - name: metric_value
+            description: Numeric metric value.
+          - name: firmware_version
+            description: Format \d+\.\d+\.\d+.
+          - name: battery_pct
+            description: 0-100.
+          - name: event_timestamp
+            description: When the reading was taken on-device.
+          - name: sync_timestamp
+            description: When the device synced.
+          - name: ingestion_timestamp
+            description: When Kafka received the event.
+          - name: source_type
+            description: simulator | whoop_api | openfda.
+          - name: kafka_topic
+            description: Kafka topic the event landed on.
+          - name: kafka_partition
+            description: Kafka partition for this event.
+          - name: kafka_offset
+            description: Kafka offset within the partition.
+
+  - name: observability
+    description: |
+      PulseTrack observability layer — pipeline-health audit trail. The
+      ``monitor_runs`` table captures every GX expectation suite execution
+      and custom quality monitor over bronze/silver/gold.
+    database: |
+      {%- if target.type == 'snowflake' -%}
+        PULSETRACK
+      {%- else -%}
+        {{ target.database | default('main') }}
+      {%- endif -%}
+    schema: |
+      {%- if target.type == 'snowflake' -%}
+        OBSERVABILITY
+      {%- else -%}
+        main_seeds
+      {%- endif -%}
+    tags: ['observability', 'audit']
+
+    tables:
+      - name: monitor_runs
+        identifier: |
+          {%- if target.type == 'duckdb' -%}
+            fixture_observability_monitor_runs
+          {%- else -%}
+            monitor_runs
+          {%- endif -%}
+        description: |
+          Audit ledger of every GX suite / quality-monitor run. Powers the
+          ops dashboard's quality-trend view and the int_silver_quality_summary
+          model.
+        loaded_at_field: finished_at
+        freshness:
+          warn_after: {count: 6, period: hour}
+          error_after: {count: 24, period: hour}
+        columns:
+          - name: run_id
+            description: Per-run unique identifier.
+          - name: monitor_name
+            description: Logical monitor name (e.g., gx_silver_sensor_suite).
+          - name: suite_name
+            description: GX expectation suite name when applicable.
+          - name: layer
+            description: bronze | silver | gold.
+          - name: table_name
+            description: Target table the monitor evaluated.
+          - name: run_status
+            description: success | failure | skipped.
+          - name: rows_evaluated
+            description: Row count assessed by this run.
+          - name: rows_failed
+            description: Row count that violated at least one expectation.
+          - name: expectations_run
+            description: Total expectations executed.
+          - name: expectations_failed
+            description: Count of failed expectations.
+          - name: started_at
+            description: Monitor start timestamp.
+          - name: finished_at
+            description: Monitor finish timestamp.
+          - name: failure_summary
+            description: Short JSON-like description of failures.
+          - name: environment
+            description: prod | dev | local.

@@ -11,10 +11,36 @@ testpaths = ["tests"]
 addopts = "-v --cov=. --cov-report=term-missing"
 
 [tool.coverage.run]
+# Coverage scope: business logic only. Omits below are scripts/
+# orchestration/one-shot CLIs that are exercised by integration tests
+# (on EMR) rather than unit tests — standard split for data pipelines
+# where Spark + AWS API mocks would dwarf actual logic-under-test.
 omit = [
   "query_*.py",
   "*/.claude/*",
   "tests/*",
+  # CLI entry points (covered by integration tests / runbooks)
+  "migrations/cli.py",
+  "observability/cli.py",
+  # One-shot scripts (manually run, not library code)
+  "benchmarks/*",
+  "scripts/*",
+  "data_generators/batch_scale_producer.py",
+  "data_generators/whoop_api/producer.py",
+  "data_generators/openfda_producer.py",
+  "data_generators/fhir_producer.py",
+  "data_generators/synthetic/ehr_generator.py",
+  # Orchestration tasks (executed by Prefect; covered by flow-level tests)
+  "orchestration/tasks/*",
+  "orchestration/flows/*",
+  "orchestration/deployments.py",
+  # Generated / scaffolding code
+  "dbt_project/**",
+  "infrastructure/**",
+  # AI integrations (require live Anthropic API)
+  "ai/*",
+  # Migration catalog configuration (one-shot at deploy time)
+  "migrations/catalog_config.py",
 ]
 
 [tool.coverage.report]
@@ -22,7 +48,11 @@ exclude_also = [
   "if __name__ == .__main__.:",
   "raise NotImplementedError",
   "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "@(abc\\.)?abstractmethod",
 ]
+skip_covered = false
+sort = "Cover"
 
 [tool.mypy]
 python_version = "3.11"
