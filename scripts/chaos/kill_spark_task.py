@@ -66,7 +66,11 @@ def ssh_master(cmd: str, key_path: str, host: str) -> str:
         f"hadoop@{host}",
         cmd,
     ]
-    result = subprocess.run(full, capture_output=True, text=True, timeout=60)
+    # 300s — `yarn application -list` is slow under heavy load (5 streaming
+    # queries + 4 dim batches = 10 AMs querying RM); SSH master connection
+    # slot may also be saturated. 60s default ran out during the 10M run
+    # (see scale_test_execution_log.md drill 1 + drill 2 traces).
+    result = subprocess.run(full, capture_output=True, text=True, timeout=300)
     if result.returncode != 0:
         raise RuntimeError(
             f"SSH command failed (exit {result.returncode}):\n  cmd={cmd}\n  stderr={result.stderr}"

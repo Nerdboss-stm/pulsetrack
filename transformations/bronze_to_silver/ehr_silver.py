@@ -165,7 +165,7 @@ def build_medications_df(spark: SparkSession, records: list[dict]) -> DataFrame:
                     "dosage": entry["dosage"],
                     "frequency": entry["frequency"],
                     "start_date": entry["start_date"],
-                    "end_date": entry["end_date"],
+                    "end_date": entry.get("end_date"),  # synthetic ehr_generator omits for active meds
                     "status": entry["status"],
                     "prescriber_npi": entry["prescriber_npi"],
                     "batch_date": batch_date,
