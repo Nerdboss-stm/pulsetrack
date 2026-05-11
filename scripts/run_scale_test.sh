@@ -26,6 +26,12 @@
 
 set -euo pipefail
 
+# ERR trap: log the failing command + line number so silent exits are visible.
+# Smoke run #3 exited cleanly at T+45m without any further markers; the
+# command that triggered set -e was a mystery. Trap makes the failure
+# observable next time.
+trap 'rc=$?; echo "ABORT at line $LINENO: rc=$rc cmd=\"$BASH_COMMAND\"" >&2; exit $rc' ERR
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
@@ -103,7 +109,11 @@ echo "  bucket=$BUCKET"
 
 # ── Phase 1: Apply migrations ─────────────────────────────────────────────
 log_step "T-25m Apply pending Glacierbase migrations"
-python3 -m migrations.cli run 2>&1 || echo "  WARN: migrations failed or already applied (continuing)"
+# migrations/catalogs/glue_iceberg.yaml references ${LAKEHOUSE_BUCKET};
+# we maintain a separate BUCKET var for the rest of the orchestrator but
+# need to export LAKEHOUSE_BUCKET for migrations.cli's templating.
+LAKEHOUSE_BUCKET="$BUCKET" AWS_ENV="${PT_AWS_ENV:-dev}" \
+    python3 -m migrations.cli run 2>&1 || echo "  WARN: migrations failed or already applied (continuing)"
 
 # ── Phase 2: Deploy code to EMR ───────────────────────────────────────────
 log_step "T-20m Sync project to EMR master via S3"
@@ -323,6 +333,13 @@ log_step "T-12m Start gold fact_vital_daily_summary"
 STEP_GOLD_FVD=$(submit_spark_step "scale-test-gold-fact-vital-daily" "transformations/silver_to_gold/fact_vital_daily_summary.py" "--mode streaming --format iceberg")
 echo "  gold_fvd_step_id=$STEP_GOLD_FVD"
 
+log_step "T-12m Start streaming bronze (pharmacy)"
+# bronze_pharmacy: openfda producer publishes to pharmacy_events; this stream
+# drains the topic to silver_pharmacy + the identity_bridge fda_report_id phase.
+# Was missing from the orchestrator entirely (gap #29 in the audit).
+STEP_BRONZE_PHARMACY=$(submit_spark_step "scale-test-bronze-pharmacy" "streaming/pharmacy_bronze_ingestion.py" "")
+echo "  bronze_pharmacy_step_id=$STEP_BRONZE_PHARMACY"
+
 # ── Pre-build static dimensions BEFORE producers start ────────────────────
 # dim_metric / dim_date / dim_device / dim_time / dim_patient are slowly-
 # changing and don't need to stream alongside the high-volume facts. Build
@@ -342,15 +359,19 @@ log_step "T-12m Wait for streams to be ACTIVE (max 5 min)"
 DEADLINE=$(($(date +%s) + 300))
 while [[ $(date +%s) -lt $DEADLINE ]]; do
     sleep 30
-    # Lightweight: poll YARN app states via SSH (could also hit Prometheus)
+    # Poll YARN app states via SSH. Use `grep "^application_" | wc -l` rather
+    # than `grep -c` because grep -c returns exit 1 on zero matches, which
+    # then triggers the `|| echo 0` fallback and emits "0\n0" — bash
+    # arithmetic chokes on multi-line. wc -l always returns exit 0.
     APPS_RUNNING=$(ssh -i ~/.ssh/pulsetrack-emr.pem -o StrictHostKeyChecking=no \
         "hadoop@$MASTER_DNS" \
-        "yarn application -list -appStates RUNNING 2>/dev/null | grep -c 'application_' || echo 0" \
-        || echo 0)
-    echo "  apps_running=$APPS_RUNNING (target=4)"
+        "yarn application -list -appStates RUNNING 2>/dev/null | grep '^application_' | wc -l" \
+        2>/dev/null | tr -d '[:space:]' || echo "0")
+    [[ -z "$APPS_RUNNING" ]] && APPS_RUNNING=0
+    echo "  apps_running=$APPS_RUNNING (target=5)"  # bronze + silver + 2 gold + bronze_pharmacy
     [[ "$APPS_RUNNING" -ge 4 ]] && break
 done
-[[ "$APPS_RUNNING" -ge 3 ]] || abort "Streams did not become active within 5 min (need ≥3 of 4)"
+[[ "$APPS_RUNNING" -ge 3 ]] || abort "Streams did not become active within 5 min (need ≥3 of 5)"
 
 # ── Phase 4: Start all 4 producers concurrently ──────────────────────────
 log_step "T-10m Launch all 4 producers on EMR master (tmux sessions)"
@@ -360,6 +381,13 @@ SSH="ssh -i ~/.ssh/pulsetrack-emr.pem -o StrictHostKeyChecking=no hadoop@$MASTER
 # If install fails we fall back to nohup + & later; either way producers run.
 $SSH "command -v tmux >/dev/null || sudo yum install -y tmux 2>/dev/null" || \
     echo "  WARN: tmux install failed; falling back to nohup mode"
+
+# Producer dep install: WHOOP producer transitively imports confluent_kafka's
+# schema_registry, which needs httpx (not in EMR's bundled python3.11). Install
+# once at orchestrator start so the WHOOP poller doesn't crash with
+# ModuleNotFoundError. Idempotent; pip noops if already installed.
+$SSH "sudo /usr/bin/python3.11 -m pip install httpx 2>/dev/null" || \
+    echo "  WARN: httpx install failed; whoop producer may crash on import"
 
 $SSH "tmux kill-server 2>/dev/null || true; tmux new-session -d -s pulsetrack 2>/dev/null" || \
     echo "  WARN: tmux session creation failed"
@@ -399,12 +427,17 @@ $SSH "cd /home/hadoop/pulsetrack && \
          > /tmp/openfda.log 2>&1 &
       echo \"  openfda PID=\$!\""
 
-# Producer 4: FHIR / EHR batch  (single-shot — writes JSON + exits)
+# Producer 4: Synthetic EHR generator (single-shot — writes 7 daily batches).
+# Previously used data_generators/fhir_producer.py against an external HAPI
+# FHIR server, but that server emits malformed effectiveDateTime values
+# ("...Z," with a trailing comma) that crash pydantic. The synthetic
+# generator at data_generators/synthetic/ehr_generator.py produces the
+# same JSON shape with valid data and no external dependency.
 $SSH "cd /home/hadoop/pulsetrack && \
       AWS_DEFAULT_REGION=us-east-1 nohup /usr/bin/python3.11 \
-         data_generators/fhir_producer.py \
+         -m data_generators.synthetic.ehr_generator \
          > /tmp/fhir.log 2>&1 &
-      echo \"  fhir PID=\$!\""
+      echo \"  ehr PID=\$!\""
 
 echo "  All 4 producers launched (nohup). Logs at /tmp/{batch-scale,whoop,openfda,fhir}.log on master."
 
