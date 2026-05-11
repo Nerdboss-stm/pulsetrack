@@ -1,0 +1,90 @@
+# PulseTrack observability monitor spec.
+#
+# Drives observability/cli.py:
+#   python -m observability.cli run --spec observability/sql/monitor_spec.yaml
+#
+# Edit thresholds per environment. dev = relaxed, prod = strict.
+
+tables:
+
+  # ── Bronze ─────────────────────────────────────────────────────────────
+  - fqn: glue_iceberg.pulsetrack_bronze_dev.sensor_readings
+    freshness:
+      timestamp_column: ingestion_timestamp
+      max_age_minutes: 5
+    volume:
+      expected_min: 1
+    schema: {}
+    distribution:
+      - column: is_parseable
+        expected_null_rate_max: 0.01
+      - column: battery_pct
+        value_min: 0
+        value_max: 100
+        expected_null_rate_max: 0.10
+
+  # ── Silver ─────────────────────────────────────────────────────────────
+  - fqn: glue_iceberg.pulsetrack_silver_dev.sensor_readings
+    freshness:
+      timestamp_column: ingestion_timestamp
+      max_age_minutes: 30   # silver is downstream; 5 min for bronze → 30 min SLA
+    volume:
+      expected_min: 1
+    schema: {}
+    distribution:
+      - column: metric_value
+        expected_null_rate_max: 0.05
+      - column: is_valid
+        expected_null_rate_max: 0.01
+
+  - fqn: glue_iceberg.pulsetrack_silver_dev.identity_bridge
+    freshness:
+      timestamp_column: recorded_at
+      max_age_minutes: 1440   # daily-batch update; 24h SLA
+    volume:
+      expected_min: 1
+    schema: {}
+    distribution:
+      - column: patient_key
+        expected_null_rate_max: 0.20   # some 'pending' bridge rows have no patient_key
+      - column: identifier_type
+        expected_distinct_min: 3       # email, mrn, device_account, fda_report
+
+  # ── Gold ───────────────────────────────────────────────────────────────
+  - fqn: glue_iceberg.pulsetrack_gold_dev.fact_vital_daily_summary
+    freshness:
+      timestamp_column: event_date
+      max_age_minutes: 1440
+    volume:
+      expected_min: 1
+    schema: {}
+    distribution:
+      - column: validity_rate
+        value_min: 0.0
+        value_max: 1.0
+      - column: avg_value
+        expected_null_rate_max: 0.20   # some patient×metric×day rows have all-invalid
+
+  - fqn: glue_iceberg.pulsetrack_gold_dev.fact_vital_reading
+    freshness:
+      timestamp_column: event_timestamp
+      max_age_minutes: 30
+    volume:
+      expected_min: 1
+    schema: {}
+    distribution:
+      - column: vital_status
+        expected_distinct_min: 2
+
+  - fqn: glue_iceberg.pulsetrack_gold_dev.dim_patient
+    freshness:
+      timestamp_column: dbt_loaded_at
+      max_age_minutes: 1440
+    volume:
+      expected_min: 1
+    schema: {}
+    distribution:
+      - column: patient_key
+        expected_null_rate_max: 0.0
+      - column: health_complexity_bucket
+        expected_distinct_min: 2

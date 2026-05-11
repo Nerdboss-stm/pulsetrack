@@ -72,6 +72,26 @@ class Settings(BaseSettings):
     whoop_user_email: str = ""
     whoop_poll_interval_seconds: int = 900
     whoop_backfill_days: int = 30
+
+    # ── Anthropic Claude API (for ai/ modules) ─────────────────────────
+    # Resolves in priority:
+    #   1. ANTHROPIC_API_KEY env var
+    #   2. .env file (via pydantic-settings)
+    #   3. Prefect Block (set at flow-run time)
+    # Empty string → ai/ modules raise RuntimeError when called.
+    anthropic_api_key: str = ""
+    ai_model: str = "claude-sonnet-4-5"
+    ai_max_tokens: int = 4096
+
+    # ── Observability ────────────────────────────────────────────────────
+    # Channels are best-effort: missing webhook URL means stub-only
+    # logging. PagerDuty routing is only used for status='error'.
+    slack_webhook_url: str = ""
+    pagerduty_routing_key: str = ""
+    sns_alert_topic_arn: str = (
+        "arn:aws:sns:us-east-1:960341592614:pulsetrack-dev-alerts"
+    )
+    observability_table: str = "glue_iceberg.pulsetrack_gold_dev.monitor_runs"
     whoop_oauth_scopes: str = (
         "read:recovery read:sleep read:workout read:cycles "
         "read:body_measurement read:profile offline"
