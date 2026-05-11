@@ -12,6 +12,12 @@
 #
 # Run from repo root:
 #     AWS_PROFILE=pulsetrack PT_AWS_ENV=dev ./scripts/run_scale_test.sh
+#     AWS_PROFILE=pulsetrack PT_AWS_ENV=dev ./scripts/run_scale_test.sh --smoke 1000
+#
+# --smoke N flag: runs the full pipeline end-to-end with N events instead of 10M.
+# This validates every step (producer → bronze → silver → identity_bridge →
+# gold → monitors → OPTIMIZE) in ~5 min before committing to a full 10M / $50
+# run. Catches orchestrator bugs without burning AWS budget.
 #
 # Stdout + stderr are also tee'd to docs/scale_test_execution_log.md
 # (the live operator journal — the postmortems anchor here for
@@ -23,15 +29,39 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# ── CLI flag parsing ──────────────────────────────────────────────────────
+EVENT_COUNT=10000000   # default: full 10M run
+USER_COUNT=50000
+SMOKE_MODE=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --smoke)
+            EVENT_COUNT="${2:-1000}"
+            USER_COUNT=$(( EVENT_COUNT / 20 ))  # ~20 events per user for smoke
+            [[ "$USER_COUNT" -lt 1 ]] && USER_COUNT=1
+            SMOKE_MODE=1
+            shift 2
+            ;;
+        *)
+            echo "Unknown flag: $1" >&2
+            exit 64
+            ;;
+    esac
+done
+
 LOG=docs/scale_test_execution_log.md
+[[ "$SMOKE_MODE" -eq 1 ]] && LOG=docs/scale_test_smoke_log.md
 mkdir -p docs
 exec > >(tee -a "$LOG") 2>&1
 
 # ── Banner ────────────────────────────────────────────────────────────────
 TEST_START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+MODE_LABEL="full-10M"
+[[ "$SMOKE_MODE" -eq 1 ]] && MODE_LABEL="smoke-${EVENT_COUNT}"
 echo ""
 echo "==============================================================================="
-echo "PulseTrack scale test — $TEST_START"
+echo "PulseTrack scale test — $TEST_START — mode=$MODE_LABEL"
+echo "  event_count=$EVENT_COUNT user_count=$USER_COUNT"
 echo "==============================================================================="
 echo ""
 
@@ -289,6 +319,20 @@ log_step "T-12m Start gold fact_vital_daily_summary"
 STEP_GOLD_FVD=$(submit_spark_step "scale-test-gold-fact-vital-daily" "transformations/silver_to_gold/fact_vital_daily_summary.py" "--mode streaming --format iceberg")
 echo "  gold_fvd_step_id=$STEP_GOLD_FVD"
 
+# ── Pre-build static dimensions BEFORE producers start ────────────────────
+# dim_metric / dim_date / dim_device / dim_time / dim_patient are slowly-
+# changing and don't need to stream alongside the high-volume facts. Build
+# them once at orchestrator start so the facts can join against populated
+# dim tables. dim_patient depends on identity_bridge (which depends on
+# silver_ehr — built later in T-2m batch tier), so dim_patient runs LAST
+# in the batch tier, not here.
+log_step "T-11m Pre-build static dimensions (4 dims, parallel batch)"
+STEP_DIM_METRIC=$(submit_spark_step "scale-test-dim_metric" "transformations/silver_to_gold/dim_metric.py" "--format iceberg")
+STEP_DIM_DATE=$(submit_spark_step "scale-test-dim_date" "transformations/silver_to_gold/dim_date.py" "--format iceberg")
+STEP_DIM_DEVICE=$(submit_spark_step "scale-test-dim_device" "transformations/silver_to_gold/dim_device.py" "--format iceberg")
+STEP_DIM_TIME=$(submit_spark_step "scale-test-dim_time" "transformations/silver_to_gold/dim_time.py" "--format iceberg")
+echo "  dim_metric=$STEP_DIM_METRIC dim_date=$STEP_DIM_DATE dim_device=$STEP_DIM_DEVICE dim_time=$STEP_DIM_TIME"
+
 # Wait for streams to be ACTIVE (poll Prometheus :8001 :8004 :8006).
 log_step "T-12m Wait for streams to be ACTIVE (max 5 min)"
 DEADLINE=$(($(date +%s) + 300))
@@ -315,16 +359,17 @@ $SSH "aws s3 cp s3://${BUCKET}/code/pulsetrack-scale-test.tar.gz /tmp/ && \
       mkdir -p /home/hadoop/pulsetrack && \
       tar xzf /tmp/pulsetrack-scale-test.tar.gz -C /home/hadoop/pulsetrack"
 
-# Producer 1: batch scale producer (10M events)
+# Producer 1: batch scale producer — event count parameterized by --smoke flag.
+# Full mode: 10,000,000 events / 50,000 users. Smoke: e.g. 1000 / 50.
 $SSH "tmux new-window -t pulsetrack -n batch-scale \
         'cd /home/hadoop/pulsetrack && \
          AWS_DEFAULT_REGION=us-east-1 \
          /usr/bin/python3.11 data_generators/batch_scale_producer.py \
             --brokers $BOOTSTRAP \
             --topic sensor_readings \
-            --count 10000000 \
-            --users 50000 \
-            --report-interval 50000 \
+            --count $EVENT_COUNT \
+            --users $USER_COUNT \
+            --report-interval $(( EVENT_COUNT / 200 < 5000 ? 5000 : EVENT_COUNT / 200 )) \
             2>&1 | tee /tmp/batch-scale.log'"
 
 # Producer 2: WHOOP API (real account)
@@ -350,6 +395,31 @@ $SSH "tmux new-window -t pulsetrack -n fhir \
 
 echo "  All 4 producers launched. Use 'tmux attach' on master to monitor."
 
+# ── Phase 4.5: Periodic batch tier ────────────────────────────────────────
+# After producers have been running ~2 min, run the slow-side-dish batch
+# transforms. These need EHR + pharmacy bronze data to exist, which the
+# fhir + openfda producers have started writing. Submit as fire-and-forget
+# Spark batch steps; the cluster will queue them after the streaming queries
+# are stable.
+log_step "T-8m Submit batch tier (silver_ehr + silver_pharmacy + identity_bridge + dim_patient)"
+STEP_EHR_SILVER=$(submit_spark_step "scale-test-silver-ehr-batch" "transformations/bronze_to_silver/ehr_silver.py" "--format iceberg")
+STEP_PHARMACY_SILVER=$(submit_spark_step "scale-test-silver-pharmacy-batch" "transformations/bronze_to_silver/pharmacy_silver.py" "--mode batch")
+echo "  silver_ehr=$STEP_EHR_SILVER silver_pharmacy=$STEP_PHARMACY_SILVER"
+
+# identity_bridge depends on silver_ehr + silver_sensor + silver_pharmacy.
+# Submit AFTER those are queued — EMR step concurrency means it'll wait
+# its turn behind them anyway, but explicit ordering avoids 'bronze_pharmacy
+# table missing' early-exit fallthrough.
+sleep 60
+STEP_IDENTITY=$(submit_spark_step "scale-test-identity-bridge" "transformations/identity_resolution/patient_identity_bridge.py" "--format iceberg")
+echo "  identity_bridge=$STEP_IDENTITY"
+
+# dim_patient depends on identity_bridge. Same logic — submit a bit later
+# so it lands after the bridge step.
+sleep 60
+STEP_DIM_PATIENT=$(submit_spark_step "scale-test-dim_patient" "transformations/silver_to_gold/dim_patient.py" "--format iceberg")
+echo "  dim_patient=$STEP_DIM_PATIENT"
+
 # ── Phase 5: Trigger Prefect deployments ─────────────────────────────────
 log_step "T-5m Trigger Prefect deployments (ad-hoc)"
 if command -v prefect >/dev/null; then
@@ -364,28 +434,38 @@ log_step "T+0m Active monitoring (15 min before chaos)"
 echo "  Open: Grafana, CloudWatch, Prefect UI."
 echo "  Watching for: producer rate, MSK ingress, bronze write rate."
 
-sleep 900  # 15 minutes
+# Smoke mode: skip the 15-min monitoring window and the chaos drills entirely.
+# Smoke goal = validate orchestrator end-to-end, not test recovery semantics.
+if [[ "$SMOKE_MODE" -eq 1 ]]; then
+    echo "  SMOKE mode: monitoring 3 min instead of 15, chaos drills skipped."
+    sleep 180
+else
+    sleep 900  # 15 minutes
+fi
 
-# ── Phase 7: Chaos drill 1 ───────────────────────────────────────────────
-log_step "T+15m Chaos drill 1 — kill ONE silver executor"
-python3 scripts/chaos/kill_spark_task.py \
-    --app-name "silver_sensor_streaming" \
-    --recovery-budget-seconds 60 \
-    --host "$MASTER_DNS" || \
-    echo "  WARN: drill 1 failed — postmortem will capture details"
+# ── Phase 7+8: Chaos drills (skipped in smoke mode) ──────────────────────
+if [[ "$SMOKE_MODE" -eq 0 ]]; then
+    log_step "T+15m Chaos drill 1 — kill ONE silver executor"
+    python3 scripts/chaos/kill_spark_task.py \
+        --app-name "silver_sensor_streaming" \
+        --recovery-budget-seconds 60 \
+        --host "$MASTER_DNS" || \
+        echo "  WARN: drill 1 failed — postmortem will capture details"
 
-sleep 600  # 10 min recovery + observation window
+    sleep 600  # 10 min recovery + observation window
 
-# ── Phase 8: Chaos drill 2 ───────────────────────────────────────────────
-log_step "T+30m Chaos drill 2 — kill ENTIRE silver streaming app"
-python3 scripts/chaos/kill_spark_app.py \
-    --app-name "silver_sensor_streaming" \
-    --step-script "transformations/bronze_to_silver/sensor_silver.py" \
-    --recovery-budget-seconds 300 \
-    --host "$MASTER_DNS" || \
-    echo "  WARN: drill 2 failed — postmortem will capture details"
+    log_step "T+30m Chaos drill 2 — kill ENTIRE silver streaming app"
+    python3 scripts/chaos/kill_spark_app.py \
+        --app-name "silver_sensor_streaming" \
+        --step-script "transformations/bronze_to_silver/sensor_silver.py" \
+        --recovery-budget-seconds 300 \
+        --host "$MASTER_DNS" || \
+        echo "  WARN: drill 2 failed — postmortem will capture details"
 
-sleep 600  # full app-level recovery window
+    sleep 600  # full app-level recovery window
+else
+    log_step "T+15m Chaos drills SKIPPED in smoke mode"
+fi
 
 # ── Phase 9: Stop producers + drain ──────────────────────────────────────
 log_step "T+45m Stop producers + drain streams"
@@ -396,6 +476,35 @@ $SSH "tmux send-keys -t pulsetrack:batch-scale C-c && \
 
 echo "  Waiting 5 min for streams to drain (lag → 0)..."
 sleep 300
+
+# ── Phase 9.5: Re-run batch tier to capture late-arriving data ───────────
+# Run identity_bridge + dim_patient one more time so the final state
+# captures everything that landed during the chaos-drill window.
+log_step "T+50m Final batch tier (identity_bridge + dim_patient re-run)"
+STEP_IDENTITY_FINAL=$(submit_spark_step "scale-test-identity-bridge-final" "transformations/identity_resolution/patient_identity_bridge.py" "--format iceberg")
+sleep 30
+STEP_DIM_PATIENT_FINAL=$(submit_spark_step "scale-test-dim_patient-final" "transformations/silver_to_gold/dim_patient.py" "--format iceberg")
+echo "  identity_bridge_final=$STEP_IDENTITY_FINAL dim_patient_final=$STEP_DIM_PATIENT_FINAL"
+
+# ── Phase 9.7: OPTIMIZE all Delta/Iceberg tables (compact small files) ────
+# Bronze accumulates many small parquets during high-throughput streaming
+# (78,087 files at 23 KB avg in our prior 10M run). OPTIMIZE compacts to
+# the configured target file size (typically 128 MB). VACUUM removes the
+# now-orphan files older than the retention window.
+log_step "T+52m OPTIMIZE (compact small files) + VACUUM"
+STEP_OPTIMIZE=$(submit_spark_step "scale-test-optimize-compact" "maintenance/compaction.py" "")
+echo "  optimize_step_id=$STEP_OPTIMIZE"
+
+# ── Phase 9.9: Observability monitors run ─────────────────────────────────
+# Run the freshness / volume / schema / distribution monitors against the
+# now-stable tables. Results land in the observability ledger (Iceberg
+# table) and any alert thresholds fire via Slack/SNS.
+log_step "T+54m Observability monitors (freshness + volume + distribution)"
+$SSH "cd /home/hadoop/pulsetrack && \
+      AWS_DEFAULT_REGION=us-east-1 PT_ENVIRONMENT=cloud PT_AWS_ENV=dev \
+      /usr/bin/python3.11 -m observability.cli run \
+         --spec observability/sql/monitor_spec.yaml 2>&1 | tee /tmp/monitors.log" || \
+    echo "  WARN: monitor run failed (continuing — check /tmp/monitors.log on master)"
 
 # ── Phase 10: Benchmarks ─────────────────────────────────────────────────
 log_step "T+55m Running benchmark report"
@@ -413,9 +522,25 @@ python3 scripts/capture_grafana_screenshots.py \
     --test-start "$TEST_START" || \
     echo "  WARN: screenshot capture skipped (Grafana endpoint may be unset)"
 
-# ── Phase 12: Consumer-side smoke ────────────────────────────────────────
-log_step "T+70m Consumer-side smoke (Snowflake + ML feature query)"
-python3 - <<PYEOF
+# ── Phase 11.5: E2E latency measurement ──────────────────────────────────
+log_step "T+62m Measure E2E latency (Kafka publish → silver write)"
+$SSH "cd /home/hadoop/pulsetrack && \
+      AWS_DEFAULT_REGION=us-east-1 PT_ENVIRONMENT=cloud PT_AWS_ENV=dev \
+      /usr/bin/python3.11 -m benchmarks.measure_e2e_latency \
+         --format iceberg \
+         --output-json /tmp/e2e_latency.json 2>&1 | tee /tmp/e2e_latency.log" || \
+    echo "  WARN: latency measurement skipped — see /tmp/e2e_latency.log"
+# Copy the JSON results back for the benchmark report to pick up
+scp -i ~/.ssh/pulsetrack-emr.pem -o StrictHostKeyChecking=no \
+    "hadoop@$MASTER_DNS:/tmp/e2e_latency.json" docs/e2e_latency.json 2>/dev/null || \
+    echo "  WARN: e2e_latency.json not retrieved"
+
+# ── Phase 12: Consumer-side validation (Snowflake + Athena + ML + Slack) ──
+log_step "T+70m Consumer-side validation (4 surfaces)"
+
+# 12a. Snowflake EXTERNAL TABLE refresh + view queries
+echo "  [12a] Snowflake EXTERNAL TABLE refresh + view queries..."
+python3 - <<PYEOF || echo "  WARN: Snowflake validation failed"
 from pt_secrets import get_secret
 try:
     import snowflake.connector
@@ -423,12 +548,98 @@ try:
     with snowflake.connector.connect(**{k: creds[k] for k in
                                         ("account","user","password","role","warehouse","database")}) as conn:
         with conn.cursor() as cur:
-            for view in ("VW_PATIENT_HEALTH_360", "VW_ANOMALY_DASHBOARD"):
-                cur.execute(f"SELECT COUNT(*) FROM ANALYTICS.{view}")
-                n = cur.fetchone()[0]
-                print(f"  ANALYTICS.{view}: {n:,} rows")
+            # Refresh EXTERNAL TABLE pointers so Snowflake sees the latest
+            # Glue catalog state (Iceberg snapshot moves with every commit).
+            for ext in ("EXT_FACT_VITAL_READING", "EXT_FACT_VITAL_DAILY_SUMMARY"):
+                try:
+                    cur.execute(f"ALTER EXTERNAL TABLE PULSETRACK.GOLD.{ext} REFRESH")
+                    print(f"    refreshed: PULSETRACK.GOLD.{ext}")
+                except Exception as e:
+                    print(f"    refresh skipped {ext}: {e}")
+            # Query the 4 analytics views
+            for view in ("VW_PATIENT_HEALTH_360", "VW_ANOMALY_DASHBOARD",
+                         "VW_VITAL_TRENDS", "VW_DEVICE_FLEET_HEALTH"):
+                try:
+                    cur.execute(f"SELECT COUNT(*) FROM PULSETRACK.ANALYTICS.{view}")
+                    n = cur.fetchone()[0]
+                    print(f"    PULSETRACK.ANALYTICS.{view}: {n:,} rows")
+                except Exception as e:
+                    print(f"    view {view} failed: {e}")
 except Exception as e:
-    print(f"  WARN: consumer smoke failed — {e}")
+    print(f"  WARN: Snowflake setup failed — {e}")
+PYEOF
+
+# 12b. Athena query on Iceberg gold tables (direct Glue catalog)
+echo "  [12b] Athena queries on Iceberg gold (via Glue catalog)..."
+ATHENA_BUCKET="s3://${BUCKET}/athena-results/"
+for QUERY_LABEL in fact_count fact_max_date dim_metric_count fact_dim_join; do
+    case "$QUERY_LABEL" in
+        fact_count)
+            Q="SELECT COUNT(*) FROM pulsetrack_gold_dev.fact_vital_reading"
+            ;;
+        fact_max_date)
+            Q="SELECT MAX(event_timestamp) FROM pulsetrack_gold_dev.fact_vital_reading"
+            ;;
+        dim_metric_count)
+            Q="SELECT metric_code, COUNT(*) FROM pulsetrack_gold_dev.fact_vital_reading f JOIN pulsetrack_gold_dev.dim_metric m ON f.dim_metric_key = m.dim_metric_key GROUP BY metric_code ORDER BY 2 DESC LIMIT 10"
+            ;;
+        fact_dim_join)
+            Q="SELECT d.device_type, COUNT(*) FROM pulsetrack_gold_dev.fact_vital_reading f JOIN pulsetrack_gold_dev.dim_device d ON f.dim_device_key = d.dim_device_key GROUP BY 1 ORDER BY 2 DESC"
+            ;;
+    esac
+    QID=$(aws athena start-query-execution \
+            --query-string "$Q" \
+            --result-configuration "OutputLocation=$ATHENA_BUCKET" \
+            --query-execution-context "Database=pulsetrack_gold_dev" \
+            --query 'QueryExecutionId' --output text 2>/dev/null || echo "")
+    if [[ -n "$QID" ]]; then
+        # Poll for completion (up to 60s)
+        for _ in $(seq 1 30); do
+            STATUS=$(aws athena get-query-execution --query-execution-id "$QID" \
+                       --query 'QueryExecution.Status.State' --output text 2>/dev/null)
+            [[ "$STATUS" == "SUCCEEDED" ]] && break
+            [[ "$STATUS" == "FAILED" || "$STATUS" == "CANCELLED" ]] && break
+            sleep 2
+        done
+        echo "    athena[$QUERY_LABEL]: $STATUS (id=$QID)"
+    else
+        echo "    athena[$QUERY_LABEL]: SUBMIT FAILED"
+    fi
+done
+
+# 12c. ML feature query — fact + dim join via Spark on EMR master
+echo "  [12c] ML feature query (10k rows fact+dim join)..."
+$SSH "cd /home/hadoop/pulsetrack && \
+      AWS_DEFAULT_REGION=us-east-1 PT_ENVIRONMENT=cloud PT_AWS_ENV=dev \
+      /usr/bin/python3.11 -c '
+import sys
+sys.path.insert(0, \".\")
+from streaming.spark_config import get_spark_session
+spark = get_spark_session(\"ml-feature-query\")
+df = (spark.read.table(\"glue_iceberg.pulsetrack_gold_dev.fact_vital_reading\")
+        .join(spark.read.table(\"glue_iceberg.pulsetrack_gold_dev.dim_metric\"),
+              \"dim_metric_key\")
+        .join(spark.read.table(\"glue_iceberg.pulsetrack_gold_dev.dim_device\"),
+              \"dim_device_key\")
+        .limit(10000))
+n, cols = df.count(), len(df.columns)
+print(f\"ML feature query: rows={n} cols={cols}\")
+spark.stop()
+' 2>&1 | tail -10" || echo "  WARN: ML feature query failed"
+
+# 12d. Slack anomaly-explainer alert routing test
+echo "  [12d] Slack alert routing test (anomaly explainer)..."
+python3 - <<PYEOF || echo "  WARN: Slack test failed"
+try:
+    from observability.alerting import alert_slack
+    alert_slack(
+        title="scale-test smoke",
+        message=f"PulseTrack scale test completed at $TEST_END. This is a routing test.",
+        severity="info",
+    )
+    print("    Slack alert dispatched (check #pulsetrack-alerts)")
+except Exception as e:
+    print(f"    Slack routing test failed: {e}")
 PYEOF
 
 # ── Final: report + tear-down recommendation ─────────────────────────────

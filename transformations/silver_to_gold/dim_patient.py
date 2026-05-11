@@ -63,6 +63,12 @@ def load_ehr_demographics(spark):
             )
 
     if not rows:
+        # Empty schema MUST include the same columns the populated branch
+        # adds (age, age_group). dim_patient.main() does
+        # `.select("patient_id", "age_group")` downstream — if age_group
+        # is missing in the empty case, Spark raises UNRESOLVED_COLUMN.
+        # See postmortems/2026-05-11_emr_cluster_bringup_13_incidents.md
+        # incident #19 — dim_patient FAILED on the 10M sensor-only run.
         return spark.createDataFrame(
             [],
             StructType(
@@ -70,6 +76,8 @@ def load_ehr_demographics(spark):
                     StructField("patient_id", StringType()),
                     StructField("patient_email", StringType()),
                     StructField("patient_birth_year", IntegerType()),
+                    StructField("age", IntegerType()),
+                    StructField("age_group", StringType()),
                 ]
             ),
         )

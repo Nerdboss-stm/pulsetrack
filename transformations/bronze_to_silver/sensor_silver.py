@@ -65,7 +65,13 @@ SILVER_SENSOR_DDL = (
     "sync_timestamp TIMESTAMP, "
     "source_type STRING, "
     "is_valid BOOLEAN, "
-    "is_late_arriving BOOLEAN"
+    "is_late_arriving BOOLEAN, "
+    # E2E latency instrumentation. kafka_timestamp = when the producer
+    # ACKed publish; silver_write_ts = when this row hit silver. Subtract
+    # for end-to-end pipeline latency. benchmarks/measure_e2e_latency.py
+    # computes p50/p95/p99 from these columns.
+    "kafka_timestamp TIMESTAMP, "
+    "silver_write_ts TIMESTAMP"
 )
 
 
@@ -152,6 +158,11 @@ def parse_and_explode(bronze: DataFrame) -> DataFrame:
         F.col("decoded.sync_timestamp").alias("sync_timestamp"),
         F.coalesce(F.col("decoded.source_type"), F.lit("simulator")).alias("source_type"),
         F.col("ingestion_timestamp"),
+        # E2E latency: bronze captures kafka_timestamp from the Kafka source
+        # (when the producer ACKed publish). Propagating to silver lets us
+        # compute Kafka→silver latency at p50/p95/p99 via subtract from
+        # silver_write_ts (added below).
+        F.col("kafka_timestamp"),
     )
     return parsed.select(
         F.col("reading_id"),
@@ -165,6 +176,11 @@ def parse_and_explode(bronze: DataFrame) -> DataFrame:
         F.col("sync_timestamp"),
         F.col("source_type"),
         F.col("ingestion_timestamp"),
+        F.col("kafka_timestamp"),
+        # silver_write_ts: stamped at projection time inside foreachBatch.
+        # Reading-and-writing close together means this approximates the
+        # silver write commit time within milliseconds.
+        F.current_timestamp().alias("silver_write_ts"),
         F.explode_outer("metrics_map").alias("metric_name", "metric_value"),
     )
 

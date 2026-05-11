@@ -73,6 +73,7 @@ Completeness asks: "of the events that *should* be here, what fraction *are* her
 - C1's 99.95% target leaves room for the librdkafka in-flight queue at producer shutdown (we use `flush(timeout=30)` + waitable produce confirmation, but extreme network blips can still drop the last ~50 messages). Anything below 99.9% indicates real loss — investigate.
 - C3's window is the explosion ratio, not raw count parity. Bronze is one row per device-event; silver is one row per device-event-metric. A consistent ~9× explosion is the baseline; sudden drops to ~6× mean we lost metric keys somewhere.
 - C4 is the foundation for any cross-device patient analytics. 95% is the publishable threshold; 90% is degraded but tolerable; below 90% we redesign the bridge.
+- **Reality-check (2026-05-11 scale test):** C4 measured **0%** during the 10M-event run. Two compounding root causes: (a) the `identity_bridge` Prefect step was not included in the scale-test orchestration sequence (`scripts/run_scale_test.sh` runs bronze → silver → gold without the bridge step in between), and (b) the synthetic event payloads carry no patient identity columns (no email, MRN, or device-pairing telemetry) so even if the bridge had run it would have produced 0 rows. C4 is therefore aspirational on synthetic data and only meaningful once either (i) producer payloads include identity columns, or (ii) the EHR-feed silver tables are populated. See §4.5 below for the action items.
 
 ### 2.3 Accuracy — is the data correct?
 
@@ -153,6 +154,45 @@ The actual SLI is measured by counting (lagged-minutes / total-minutes) in the S
 - If alert fired late: tighten the burn-rate window
 - If alert fired but operator ignored: review escalation (`docs/on_call.md`)
 - If no alert fired but should have: this is an SLO gap — add or tighten
+
+---
+
+## 4.5 SLO violations observed in 2026-05-11 scale test
+
+The 10M-event scale test (cluster `j-T5OF7WBI2I4V`, 2-core m5.xlarge on-demand;
+see `docs/scale_test_results.md` and postmortem `2026-05-11_emr_cluster_bringup_13_incidents.md`)
+exposed five SLOs that were either violated or could not be measured. They are listed
+here as the source-of-truth gap analysis between the SLO contract and what the
+production-grade test run actually delivered.
+
+| SLO | Target | Observed | Status | Root cause |
+|---|---|---|---|---|
+| **C4** `identity_resolution` | ≥ 95% over 24h | **0% actual** | **VIOLATED** | `identity_bridge` Prefect step was not orchestrated as part of `scripts/run_scale_test.sh`; additionally, synthetic event payloads carry no identity columns (no email, MRN, device-pairing) and no EHR feed was produced. `dim_patient` Spark step subsequently failed with `UNRESOLVED_COLUMN: age_group` because the bridge output had 0 rows. |
+| **F2** `silver_sensor_lag` (p50/p95/p99) | p95 < 60s | **NOT MEASURED** (target referenced as p50 < 30s, p95 < 60s, p99 < 120s in the test plan) | **UNVERIFIED** | The test ran in batch mode (`--trigger available_now` + `--mode batch`, see ADR-008) after the streaming topology hit YARN starvation on the 2-core cluster. Batch mode has no Kafka-commit-to-silver-visible lag to measure. Latency instrumentation also missing from the event payload: producer does not emit `producer_ts`, so even in streaming mode we would compute lag from `ingestion_timestamp` only (one-sided). |
+| **F4** `gold_fact_freshness` | p95 < 10 min | **NOT MEASURED** | Same root cause as F2: gold ran as batch (`--mode batch`) after silver completed. No live-stream freshness signal was emitted. |
+| **Chaos drill — kill-task recovery** | < 60s recovery via checkpoint replay | **NOT TESTED** | Chaos drill scripts (`scripts/chaos/kill_spark_task.py`, `scripts/chaos/kill_spark_app.py`) require live streaming queries to disrupt. The pipeline was running in batch mode for the duration of the test, so there were no live streams. Drill scripts remain code-complete and reusable. |
+| **V1/V2** stream uptime during chaos | 100% | **N/A** | Streams not running; uptime contract not applicable to a batch-mode run. |
+
+### Action items to close the gaps
+
+| # | Action | Owner | Target SLO | Priority |
+|---|---|---|---|---|
+| SLO-1 | Add `identity_bridge` step to `scripts/run_scale_test.sh` between silver and gold-dim steps; bridge must produce ≥ 1 row before `dim_patient` runs. | PulseTrack DE | C4 | P0 |
+| SLO-2 | Inject patient identity columns into synthetic event payloads at the producer (`data_generators/synthetic/wearable_generator.py`) — minimum: `device_user_uuid` mapping to a patient pool of 50K. Backfill the same field into the wearable simulator schema. | PulseTrack DE | C4 | P0 |
+| SLO-3 | Emit `producer_ts` (Kafka publish wall-clock) in every event payload; capture `silver_write_ts` in `sensor_silver.foreachBatch` sink; compute and persist Kafka→silver latency to `monitor_runs` for F2 p50/p95/p99 telemetry. | PulseTrack DE | F2 | P0 |
+| SLO-4 | Same `producer_ts` → `gold_write_ts` flow for F4. | PulseTrack DE | F4 | P0 |
+| SLO-5 | Procure 4-core m5.xlarge cluster (or equivalent) for the next scale test so the streaming topology of ADR-005 actually runs end-to-end; only then are F2/F4 and chaos drills measurable. See ADR-008 for the streaming/batch threshold. | PulseTrack DE | F2, F4, V1, V2 | P0 |
+| SLO-6 | Execute `scripts/chaos/kill_spark_task.py` against the running bronze streaming query on the 4-core run; record recovery time from checkpoint replay; budget the result against the 60s target. | PulseTrack DE | V1, V2 | P1 |
+| SLO-7 | Re-validate C4 once SLO-1 + SLO-2 land. Target: 95% on first run with synthetic identity columns; if below, redesign the bridge logic before promoting C4 to a production SLI. | PulseTrack DE | C4 | P1 |
+
+### Honest assessment
+
+This scale test proved bronze + silver + gold can move 10M events end-to-end on
+a constrained cluster. It did **not** prove the freshness, identity, or chaos-resilience
+SLOs at all. The next test must run on a 4-core cluster with the action items above
+landed; only then is the SLO catalog reality-tested against production-shape behavior.
+Until then, F2, F4, C4, V1, V2 should be treated as **unvalidated targets**, not as
+SLIs we have confidence in.
 
 ---
 

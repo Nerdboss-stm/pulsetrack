@@ -27,31 +27,30 @@ By run #11 the streaming query was actually running ("Bronze running" was logged
 | 1 | 2026-05-10 05:13 | `aws emr add-steps` rejected nested `HadoopJarStep` wrapper | Flattened to `Type=CUSTOM_JAR,Name=,Jar=,Args=[...]` |
 | 2 | 2026-05-10 05:17 | `spark.pyspark.python=/usr/bin/python3` → python3.9 → `ModuleNotFoundError: pydantic_settings` (EMR's bootstrap installed deps into python3.11 only) | Set `spark.pyspark.python=/usr/bin/python3.11` everywhere |
 | 3 | 2026-05-10 05:22 | Step concurrency=1 deadlock — silver RUNNING, bronze/gold all PENDING. Streaming queries never finish, so PENDING never advances. | `aws emr modify-cluster --step-concurrency-level 4` |
-| 4 | 2026-05-11 14:32 | `ModuleNotFoundError: data_quality` — `data_quality/` had no `__init__.py`; `--py-files` zip doesn't treat dirs as packages without it | Added 7 `__init__.py` files (`data_quality/`, `data_quality/expectations/`, `transformations/`, `transformations/bronze_to_silver/`, etc.) |
-| 5 | 2026-05-11 14:36 | `ModuleNotFoundError: schemas` — same root cause, different package | Added 3 more (`schemas/`, `utils/`, `data_generators/`, `data_generators/synthetic/`). 10 total. |
-| 6 | 2026-05-11 14:41 | `ModuleNotFoundError: httpx` — `confluent_kafka.schema_registry` transitively requires httpx, which EMR's bootstrap doesn't install | Lazy-import the Confluent Schema Registry pieces in `schemas/registry.py` so streaming jobs that only call `load_schema_str()` don't pull in the registry client |
-| 7 | 2026-05-11 14:46 | `bronze_ingestion.py: error: unrecognized arguments: --mode streaming` — orchestrator passed `--mode` but bronze uses `--trigger` | Per-script CLI args mapping: bronze gets `--trigger processing --format iceberg`; silver/gold get `--mode streaming --format iceberg` |
-| 8 | 2026-05-11 14:51 | `NotADirectoryError: ...pulsetrack-deps.zip/schemas/sensor_reading.avsc` — `pathlib.Path.read_text()` can't read files from inside a Python zip on PYTHONPATH | Switched to `importlib.resources.files('schemas').joinpath(filename).read_text()` which IS zip-safe. Also added `*.avsc` + `*.json` patterns to the orchestrator's `find` in the zip-building step (previously only `*.py`) |
-| 9 | 2026-05-11 14:54 | `AnalysisException: Failed to find data source: kafka` — Spark Kafka source JAR not in EMR's stock `/usr/lib/spark/jars/`. EMR pre-installs `aws-msk-iam-auth-2.3.2.jar` (the SASL provider) but NOT the Kafka source. | `--packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3,org.apache.spark:spark-avro_2.12:3.5.3` |
-| 10 | 2026-05-11 15:00 | `Maven unresolved dependency: spark-sql-kafka 3.5.6` — EMR ships Spark `3.5.6-amzn-2` (Amazon's fork). Maven Central only has stock `3.5.0/3.5.1/3.5.2/3.5.3`. | Use `3.5.3` for `--packages` (close enough, wire-compatible) |
-| 11 | 2026-05-11 15:03 | `NullPointerException: path is null` in spark-submit. `--packages org.apache.spark:spark-sql-kafka-0-10,org.apache.spark:spark-avro` got SPLIT by `aws emr add-steps`'s `Args=[...]` comma parser. Spark interpreted `spark-avro` as the script path. | Switched orchestrator from inline `--steps "Args=[...]"` to `--steps file://<json>` so commas inside values survive |
-| 12 | 2026-05-11 15:09 | `UnknownTopicOrPartitionException: This server does not host this topic-partition` — MSK Serverless does NOT auto-create topics; consumers fail at subscribe time | Added pre-create step using `confluent_kafka.admin.AdminClient` against MSK over OAUTHBEARER |
-| 12.5 | 2026-05-11 15:11 | Topic-creation step itself timed out from laptop (high cross-region admin-API latency to MSK Serverless) | Run the topic-creation Python via SSH on the EMR master (same VPC, low latency); also bumped admin deadline 60→180s |
+| 4 | 2026-05-11 14:32–14:36 | `ModuleNotFoundError` for multiple packages (`data_quality`, then `schemas`) — `--py-files` zip doesn't treat dirs as packages without `__init__.py`; surfaced one package at a time across two consecutive runs | Added 10 `__init__.py` files total (`data_quality/`, `data_quality/expectations/`, `transformations/`, `transformations/bronze_to_silver/`, `schemas/`, `utils/`, `data_generators/`, `data_generators/synthetic/`, etc.) |
+| 5 | 2026-05-11 14:41 | `ModuleNotFoundError: httpx` — `confluent_kafka.schema_registry` transitively requires httpx, which EMR's bootstrap doesn't install | Lazy-import the Confluent Schema Registry pieces in `schemas/registry.py` so streaming jobs that only call `load_schema_str()` don't pull in the registry client |
+| 6 | 2026-05-11 14:46 | `bronze_ingestion.py: error: unrecognized arguments: --mode streaming` — orchestrator passed `--mode` but bronze uses `--trigger` | Per-script CLI args mapping: bronze gets `--trigger processing --format iceberg`; silver/gold get `--mode streaming --format iceberg` |
+| 7 | 2026-05-11 14:51 | `NotADirectoryError: ...pulsetrack-deps.zip/schemas/sensor_reading.avsc` — `pathlib.Path.read_text()` can't read files from inside a Python zip on PYTHONPATH | Switched to `importlib.resources.files('schemas').joinpath(filename).read_text()` which IS zip-safe. Also added `*.avsc` + `*.json` patterns to the orchestrator's `find` in the zip-building step (previously only `*.py`) |
+| 8 | 2026-05-11 14:54 | `AnalysisException: Failed to find data source: kafka` — Spark Kafka source JAR not in EMR's stock `/usr/lib/spark/jars/`. EMR pre-installs `aws-msk-iam-auth-2.3.2.jar` (the SASL provider) but NOT the Kafka source. | `--packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3,org.apache.spark:spark-avro_2.12:3.5.3` |
+| 9 | 2026-05-11 15:00 | `Maven unresolved dependency: spark-sql-kafka 3.5.6` — EMR ships Spark `3.5.6-amzn-2` (Amazon's fork). Maven Central only has stock `3.5.0/3.5.1/3.5.2/3.5.3`. | Use `3.5.3` for `--packages` (close enough, wire-compatible) |
+| 10 | 2026-05-11 15:03 | `NullPointerException: path is null` in spark-submit. `--packages org.apache.spark:spark-sql-kafka-0-10,org.apache.spark:spark-avro` got SPLIT by `aws emr add-steps`'s `Args=[...]` comma parser. Spark interpreted `spark-avro` as the script path. | Switched orchestrator from inline `--steps "Args=[...]"` to `--steps file://<json>` so commas inside values survive |
+| 11 | 2026-05-11 15:09 | `UnknownTopicOrPartitionException: This server does not host this topic-partition` — MSK Serverless does NOT auto-create topics; consumers fail at subscribe time | Added pre-create step using `confluent_kafka.admin.AdminClient` against MSK over OAUTHBEARER |
+| 12 | 2026-05-11 15:11 | Topic-creation step itself timed out from laptop (high cross-region admin-API latency to MSK Serverless) | Run the topic-creation Python via SSH on the EMR master (same VPC, low latency); also bumped admin deadline 60→180s |
 | 13 | 2026-05-11 15:14 | YARN apps stuck in ACCEPTED state for 5+ min. Cluster shrunk from 4 to 2 nodes due to **spot-instance interruptions**. 9 of 10 attempted spot allocations were terminated. EMR replaced them but new spot capacity churned faster than we could schedule against. | (Pending) Switch core instance group to ON_DEMAND in `infrastructure/environments/dev.tfvars` for the next run. Spot is fine for normal dev work; not for a 90-min streaming test that can't tolerate node churn. |
 
 ## Root causes (grouped by category)
 
-**Configuration / CLI parsing** (issues 1, 7, 10, 11):
+**Configuration / CLI parsing** (issues 1, 6, 9, 10):
 - `aws emr add-steps` has two different Args syntaxes (legacy `HadoopJarStep`, modern flat). EMR docs are split.
 - Maven coordinate versions don't always match what EMR's Spark binary reports.
 - `aws-cli`'s Args=[...] bracketed format uses commas as item separators and has no escape mechanism; this is documented but easy to miss.
 
-**Python packaging** (issues 4, 5, 6, 8):
+**Python packaging** (issues 4, 5, 7):
 - `--py-files` distribution model treats zip contents as PYTHONPATH entries. Without `__init__.py` files, Python pre-3.3 treats dirs as not-packages; even in 3.11, namespace-package handling differs subtly between zip-imports and filesystem imports.
 - File I/O against zipped resources requires `importlib.resources` (PEP 451) rather than `pathlib.Path`.
 - `confluent_kafka.schema_registry` is a heavyweight import with new transitive deps in recent versions; lazy-importing it from a "schema loader" module avoids breaking pure-filesystem consumers.
 
-**Service-specific gotchas** (issues 2, 9, 12, 12.5):
+**Service-specific gotchas** (issues 2, 8, 11, 12):
 - EMR's `python3` symlink points to 3.9; `pip3 install` operates on 3.11. Always reference `/usr/bin/python3.11` explicitly when targeting the bootstrap-installed packages.
 - Spark Kafka source is NOT in EMR's stock jars (the MSK IAM auth helper IS).
 - MSK Serverless does NOT auto-create topics regardless of `auto.create.topics.enable` (that's a broker-side setting and Serverless doesn't expose it).
@@ -69,7 +68,7 @@ By run #11 the streaming query was actually running ("Bronze running" was logged
 4. **Why no integration test?** Because EMR is expensive to spin up purely for testing (~$1/hr), and there's no obvious local equivalent of "what would EMR do with this spark-submit?"
 5. **Why no cheap local equivalent?** Because EMR's pyspark Python version mismatch, MSK Serverless OAuth, and Spark-on-YARN cluster-mode are all unique to the cloud setup — none of them surface in a local docker-compose Spark stack.
 
-The fifth "why" lands on a deeper problem: **we don't have a "smoke" cluster running 24/7 against which we can validate orchestrator changes**. A 1-node always-on EMR cluster would have caught issues 1, 2, 4, 5, 6, 7, 8, 9, 10, 11 in ~5 minutes of testing instead of ~5 minutes per fix-redeploy cycle multiplied by 13.
+The fifth "why" lands on a deeper problem: **we don't have a "smoke" cluster running 24/7 against which we can validate orchestrator changes**. A 1-node always-on EMR cluster would have caught issues 1, 2, 4, 5, 6, 7, 8, 9, 10 in ~5 minutes of testing instead of ~5 minutes per fix-redeploy cycle multiplied by 13.
 
 ## Trigger
 
@@ -84,13 +83,13 @@ The Prompt-9 orchestrator (`scripts/run_scale_test.sh`) was written based on EMR
 | 1 | `scripts/run_scale_test.sh` | `submit_spark_step()` uses flattened `Type=CUSTOM_JAR` (commit `28a317e`) |
 | 2 | `scripts/run_scale_test.sh` | `spark.pyspark.python=/usr/bin/python3.11` everywhere (commit `28a317e`) |
 | 3 | (Operational; documented) | `aws emr modify-cluster --step-concurrency-level 4` as a Phase-2 pre-flight step |
-| 4 + 5 | 10 new `__init__.py` files | `data_quality/`, `data_quality/expectations/`, `transformations/`, `transformations/bronze_to_silver/`, `transformations/silver_to_gold/`, `transformations/identity_resolution/`, `streaming/`, `schemas/`, `utils/`, `data_generators/`, `data_generators/synthetic/` |
-| 6 | `schemas/registry.py` | Lazy-import the Confluent Schema Registry classes inside functions that need them |
-| 7 | `scripts/run_scale_test.sh` | Per-script CLI args (bronze `--trigger`, silver/gold `--mode`/`--format`) |
-| 8 | `schemas/registry.py` | `load_schema_str` uses `importlib.resources.files` as fallback when `pathlib.Path.read_text()` fails on zip member. Also `*.avsc` + `*.json` added to deps.zip filter. |
-| 9 + 10 | `scripts/run_scale_test.sh` | `--packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3,org.apache.spark:spark-avro_2.12:3.5.3` |
-| 11 | `scripts/run_scale_test.sh` | `submit_spark_step` now writes JSON to tempfile + uses `--steps file://` (avoids comma-split bug in `Args=[...]`) |
-| 12 + 12.5 | `scripts/run_scale_test.sh` | Topic pre-creation step runs `confluent_kafka.admin.AdminClient` via SSH on EMR master (low-latency to MSK Serverless), 180s deadline |
+| 4 | 10 new `__init__.py` files | `data_quality/`, `data_quality/expectations/`, `transformations/`, `transformations/bronze_to_silver/`, `transformations/silver_to_gold/`, `transformations/identity_resolution/`, `streaming/`, `schemas/`, `utils/`, `data_generators/`, `data_generators/synthetic/` |
+| 5 | `schemas/registry.py` | Lazy-import the Confluent Schema Registry classes inside functions that need them |
+| 6 | `scripts/run_scale_test.sh` | Per-script CLI args (bronze `--trigger`, silver/gold `--mode`/`--format`) |
+| 7 | `schemas/registry.py` | `load_schema_str` uses `importlib.resources.files` as fallback when `pathlib.Path.read_text()` fails on zip member. Also `*.avsc` + `*.json` added to deps.zip filter. |
+| 8 + 9 | `scripts/run_scale_test.sh` | `--packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3,org.apache.spark:spark-avro_2.12:3.5.3` |
+| 10 | `scripts/run_scale_test.sh` | `submit_spark_step` now writes JSON to tempfile + uses `--steps file://` (avoids comma-split bug in `Args=[...]`) |
+| 11 + 12 | `scripts/run_scale_test.sh` | Topic pre-creation step runs `confluent_kafka.admin.AdminClient` via SSH on EMR master (low-latency to MSK Serverless), 180s deadline |
 
 **Operational fix (incident 13 — pending):**
 - Edit `infrastructure/environments/dev.tfvars`: comment out `emr_core_spot_bid_price` (forces on-demand) for the next Phase-2 run. Adds ~$0.50/hr cost (vs. spot ~$0.18/hr) but eliminates the spot-reclamation churn that prevented YARN scheduling.
@@ -116,7 +115,7 @@ The Prompt-9 orchestrator (`scripts/run_scale_test.sh`) was written based on EMR
 |---|---|---|---|---|
 | 1 | Permanent: all 12 code fixes committed (see Resolution table) | PulseTrack DE | done in this commit | DONE |
 | 2 | Switch core instance group to on-demand for next 10M run | PulseTrack DE | next Phase-2 attempt | P0 |
-| 3 | Add `runbooks/emr_cluster_bringup.md` codifying the 13 gotchas as a pre-flight checklist | PulseTrack DE | 2026-05-15 | P0 |
+| 3 | Add `runbooks/emr_cluster_bringup.md` codifying the 13 incidents as a pre-flight checklist | PulseTrack DE | 2026-05-15 | P0 |
 | 4 | Set up a long-running 1-node "smoke" EMR cluster + nightly CI step that submits a hello-world spark-submit via the orchestrator's add-steps path | PulseTrack DE | 2026-Q3 | P1 |
 | 5 | Document Spark/Maven version pinning: EMR 7.13 = Spark 3.5.6-amzn-2; for `--packages` use 3.5.3 | PulseTrack DE | done (inline in `scripts/run_scale_test.sh`) | DONE |
 | 6 | Add `runbooks/msk_serverless_topic_management.md` for the "topics-don't-auto-create" gotcha | PulseTrack DE | 2026-05-22 | P1 |
@@ -131,7 +130,7 @@ The Prompt-9 orchestrator (`scripts/run_scale_test.sh`) was written based on EMR
 
 **Spot instances are for batch, not streaming.** The cost savings (~70% vs on-demand) are real for jobs that can tolerate restart. They're a liability for jobs that maintain in-memory state across hours (Spark streaming with stateful operators, Kafka consumer groups, etc.). For the 10M test we should have been on-demand from day 1.
 
-**Documentation is gold for cluster operators.** The 13 fixes here become a checklist for the next person spinning up a similar Spark + Kafka cluster — internal or external. Treat each incident as a learning artifact, not a cost.
+**Documentation is gold for cluster operators.** The 13 incidents here become a checklist for the next person spinning up a similar Spark + Kafka cluster — internal or external. Treat each incident as a learning artifact, not a cost.
 
 **Use the SSH-from-master pattern for MSK admin operations.** Cross-region admin-API calls to MSK Serverless are unreliable. When in doubt, run admin from within the cluster's VPC.
 
@@ -142,3 +141,11 @@ The Prompt-9 orchestrator (`scripts/run_scale_test.sh`) was written based on EMR
 - Related code: `scripts/run_scale_test.sh`, `schemas/registry.py`, all the new `__init__.py` files
 - Commits: `28a317e` (initial Phase-2 fixes), this commit (the 12 follow-on fixes from today's session)
 - External: EMR 7.13 Spark version (`3.5.6-amzn-2`), MSK Serverless docs on admin operations, Confluent Kafka Python client docs on `AdminClient` with OAUTHBEARER auth
+
+## Numbering reconciliation
+
+The filename and title both say "13 incidents," and that number remains correct after audit. The history of the count, for transparency:
+
+- **Initial draft (2026-05-11, end of session):** The timeline table had 14 numbered rows (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 12.5, 13) — 12.5 was added as a sub-incident under 12 when the topic-creation step itself timed out, and the author kept it numbered separately because the root cause and fix were genuinely different (`MSK doesn't auto-create topics` vs `MSK admin API is slow cross-region`). At submission time the author treated 4 and 5 as separate incidents (different missing-package errors on different runs) and 12.5 as a sub-row, landing on a headline count of "13."
+- **Subsequent audit (this revision):** Applying the rule "a defect is an incident if it has a unique root cause + fix; restatements on different surfaces are ONE incident," incidents 4 and 5 collapse into a single incident — both have the same root cause (`--py-files` zip doesn't treat dirs as packages without `__init__.py`) and the same fix (add `__init__.py` files). They surfaced one-package-at-a-time only because PySpark's import-error path returns on the first missing module rather than enumerating all of them. Conversely, 12 and 12.5 are genuinely distinct (topic auto-creation vs admin-API latency) and were promoted to peer rows.
+- **Net:** 14 original rows − 1 merge (4+5) = **13 distinct incidents**. The headline count is preserved; only the row numbering within the timeline table shifted (old 6→5, 7→6, 8→7, 9→8, 10→9, 11→10, 12→11, 12.5→12, 13 unchanged). The filename is left as-is to avoid breaking inbound links from the report and runbooks.

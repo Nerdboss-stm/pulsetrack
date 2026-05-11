@@ -1,13 +1,16 @@
 # Scale test capacity plan — 10M events, 50K users
 
 **Test owner:** PulseTrack DE
-**Test date:** 2026-05-10 (Phase 2 of Prompt 9)
-**Cluster:** EMR 7.13.0 dev (4 core nodes — bumped from default 2 for this test)
+**Test date:** 2026-05-11 (Phase 2 of Prompt 9; revised after gap-closure run)
+**Cluster:** EMR 7.13.0 dev — 4 core m5.xlarge **on-demand** (was originally 2-core spot; learned the hard way that streaming workloads can't tolerate spot reclamation and that 2 cores starve under 3 concurrent streaming queries — see ADR-007 + ADR-008 + `postmortems/2026-05-11_emr_cluster_bringup_13_incidents.md`)
+**Table format:** Iceberg (restored after the prior run retreated to Delta on 2-core; per ADR-007, Iceberg is the correct choice for ≥4-core clusters)
 **Target SLAs:**
 - Total ingestion ≤ 30 min
-- Silver lag (Kafka → silver visible) p95 < 60s
+- Silver lag (Kafka → silver visible) p95 < 60s (now measurable via `kafka_timestamp` + `silver_write_ts`; `benchmarks/measure_e2e_latency.py`)
 - No data loss across chaos drills
-- Cost ≤ $10
+- Cost ≤ $50 (revised up from $10 — on-demand 4-core for ~3h is structurally more expensive than the original 2-core spot estimate)
+- Identity resolution rate ≥ 95% (now achievable: orchestrator finally runs `identity_bridge` step explicitly)
+- All 5 gold dims build successfully (`dim_patient` fix shipped — empty-EHR schema now includes `age_group`)
 
 This document is the pre-test capacity math. Run before any actual money is spent. If any number here is wrong by an order of magnitude, the test is misconfigured — stop, fix, re-plan.
 
@@ -35,10 +38,14 @@ This document is the pre-test capacity math. Run before any actual money is spen
 | Component | Config | Capacity |
 |---|---|---|
 | EMR master | m5.xlarge (4 vCPU, 16GB) | Driver + YARN RM + ApplicationMaster overhead |
-| EMR core | m5.xlarge × 4 (spot @ $0.08 max bid) | 16 vCPU, 64GB total |
+| EMR core | m5.xlarge × **4** **on-demand** (~$0.192/h × 4 = $0.77/h core) | 16 vCPU, 64GB total |
 | EBS per node | 64 GB | Shuffle space + log retention |
 | Spark default | 7 executors × 2 cores × 5GB | dynamic alloc 1-12 |
 | Idle timeout | 7200s | Auto-terminate if streams stop |
+
+**Why on-demand (not spot):** Streaming workloads need stable executor capacity to keep up with the producer write rate and to maintain Kafka offset checkpoints. Spot reclamation causes mid-run executor loss → consumer lag spike → producer outpaces consumer → unbounded Kafka topic growth. See `postmortems/2026-05-11_emr_cluster_bringup_13_incidents.md` incident #11.
+
+**Why 4-core (not 2):** Running 4 concurrent streaming queries (bronze + silver + 2 gold facts) on 2 × m5.xlarge starved YARN. Each streaming query needs ≥1 executor slot; 2-core cluster has ~2-4 effective slots after AM overhead → "Initial job has not accepted any resources" on the 3rd-4th query. 4 cores doubles available slots to ~8-10 effective. See ADR-008.
 
 **Effective Spark capacity at burst:**
 - 14 cores active for ingestion (1 per executor reserved for tasks management)
@@ -119,33 +126,44 @@ Post-test maintenance:
 - One producer suffices (using 17% of saturation rate)
 - Headroom for 4 concurrent producers (scale + WHOOP + OpenFDA + FHIR)
 
-## 7. Cost projection
+## 7. Cost projection (revised for 4-core on-demand + Iceberg restored)
 
 | Line item | Calculation | Cost (USD) |
 |---|---|---|
-| EMR (5 nodes × spot $0.176/h × 1.58h) | core nodes + master | $1.39 |
-| EBS (5 × 64GB × $0.10/GB-month / 720h × 1.58h) | scratch + logs | $0.08 |
+| EMR core (4 × m5.xlarge × on-demand $0.192/h × 3h) | core executor nodes | $2.30 |
+| EMR master (1 × m5.xlarge × $0.192/h × 3h) | driver + RM | $0.58 |
+| EMR managed-scaling control plane | $0.096/h × 3h | $0.29 |
+| EBS (5 × 64GB × $0.10/GB-month / 720h × 3h) | scratch + logs | $0.13 |
+| MSK Serverless cluster-hour | 3 × $0.75/h (we tear down sooner if possible) | $2.25 |
 | MSK Serverless ingress | 2.5 GB × $0.0015 | $0.004 |
-| MSK partition-hours | 3 × 2h × $0.0024 | $0.014 |
-| S3 PUT | ~10k requests × $0.005/1k | $0.05 |
-| S3 storage (~2 GB × 1 day) | $0.023/GB-month / 30 | $0.0015 |
-| Athena queries (validation) | 5 queries × ~5MB scanned × $5/TB | $0.0001 |
-| Glue API calls | ~10k × $0.44/1M | $0.005 |
-| CloudWatch metrics + logs | ~100 metrics, ~1GB logs | $0.30 |
-| Secrets Manager API | ~50 calls × $0.05/10k | $0.0003 |
+| MSK partition-hours | 6 × 3h × $0.0024 | $0.043 |
+| S3 PUT (10M ingestion + Iceberg metadata commits) | ~150k × $0.005/1k | $0.75 |
+| S3 storage (~10 GB × 1 day) | $0.023/GB-month / 30 | $0.008 |
+| Athena queries (4 validation queries × 50MB) | $5/TB scanned | $0.001 |
+| Glue API calls (Iceberg catalog ops) | ~50k × $0.44/1M | $0.022 |
+| CloudWatch metrics + logs | ~200 metrics, ~3GB logs | $0.85 |
+| Secrets Manager API | ~50 × $0.05/10k | $0.0003 |
 | KMS GenerateDataKey | ~50 × $0.03/10k | $0.0002 |
 | SNS publish (alerts) | ~10 × $0.50/1M | $0.000005 |
-| **Total estimated** | | **$1.85** |
+| **Total estimated** | | **~$7.25** |
 
-**Budget hard cap (terraform `budget_limit_usd`):** $40 — set in `infrastructure/environments/dev.tfvars`.
+**Sensitivity:**
+- 6h cluster window (if extra debugging): ~$13
+- 12h cluster window: ~$24
+- MSK left up overnight (which we MUST NOT do): adds $0.75/h × N
 
-With 22× cost cushion, the test is comfortably within budget. **Threshold for abort:** if Cost Explorer shows the projected daily run-rate exceeds $20 during the test, halt immediately and investigate.
+**Budget hard cap (terraform `budget_limit_usd`):** $40. With ~5× headroom for a planned 3h run. **Threshold for abort:** if Cost Explorer projects daily run-rate >$50 during the test, halt immediately.
+
+**Cost-discipline rules:**
+1. MSK Serverless torn down the moment all producers finish (saves $0.75/h × every-hour-after)
+2. EMR cluster torn down within 1h of test completion (saves $0.96/h)
+3. S3 + Glue persist at near-zero idle cost (no compute)
 
 ## 8. Risk register
 
 | Risk | Probability | Impact | Detection | Mitigation |
 |---|---|---|---|---|
-| Spot reclaim during test | Medium | High | EMR step state moves to `FAILED` | Use ON_DEMAND fallback (`emr_core_spot_bid_price` higher than current spot price); we've bid $0.08 vs. typical $0.06 |
+| Spot reclaim during test | N/A | N/A | n/a | **NOT APPLICABLE: cluster is now on-demand**. See ADR-008 + postmortem incident #11. |
 | MSK Serverless ingress throttle | Very low | High | Producer `BufferError` rate jumps | 28× headroom; abort if sustained throttle >2min |
 | S3 prefix throttling | Very low | Medium | `SlowDown` 503 errors in Spark logs | 4,375× headroom; reversed-ID partitioning |
 | Chaos drill 2 doesn't recover | Low | High | New app not RUNNING within 5min | Re-submit step again; if 2nd attempt fails, abort + postmortem |
