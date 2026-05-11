@@ -15,3 +15,15 @@ repos:
       - id: end-of-file-fixer
       - id: check-yaml
       - id: check-json
+      - id: detect-private-key
+      - id: detect-aws-credentials
+        args: [--allow-missing-credentials]
+
+  # ── gitleaks: prevents secrets from being committed ─────────────────────
+  # Added after the 2026-05-09 incident where WHOOP creds were committed in
+  # an .env file. Catches API keys, AWS keys, generic high-entropy strings,
+  # and provider-specific patterns (Snowflake, Anthropic, Slack webhooks).
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks

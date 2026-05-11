@@ -1,0 +1,71 @@
+# gitleaks config — PulseTrack
+#
+# Custom rules + allowlist on top of the default ruleset.
+# Run locally:   gitleaks detect --source . -v
+# CI gate:       .github/workflows/secret_scan.yml
+
+title = "PulseTrack gitleaks config"
+
+# ── Extend default rules ─────────────────────────────────────────────────
+[extend]
+useDefault = true
+
+# ── Custom rules: project-specific patterns ──────────────────────────────
+[[rules]]
+description = "PulseTrack PT_ env-var with literal value"
+id = "pulsetrack-env-literal"
+regex = '''PT_[A-Z_]+\s*=\s*[A-Za-z0-9+/=_-]{16,}'''
+tags = ["pulsetrack", "env"]
+
+[[rules]]
+description = "WHOOP client secret pattern"
+id = "whoop-client-secret"
+regex = '''[A-Fa-f0-9]{64}'''
+tags = ["whoop"]
+[rules.allowlist]
+# Allow SHA-256 hashes in dbt SQL (surrogate_key macro output)
+paths = ['''dbt_project/''', '''snowflake/''', '''.*\.sql$''']
+
+[[rules]]
+description = "Anthropic API key (sk-ant-*)"
+id = "anthropic-api-key"
+regex = '''sk-ant-[A-Za-z0-9_-]{40,}'''
+tags = ["anthropic"]
+
+[[rules]]
+description = "Snowflake password in .env"
+id = "snowflake-password"
+regex = '''PT_SNOWFLAKE_PASSWORD\s*=\s*\S+'''
+tags = ["snowflake"]
+
+[[rules]]
+description = "Slack webhook URL"
+id = "slack-webhook"
+regex = '''https://hooks\.slack\.com/services/[A-Z0-9/]+'''
+tags = ["slack"]
+
+# ── Global allowlist ──────────────────────────────────────────────────────
+[allowlist]
+description = "Files and patterns excluded from scanning"
+
+paths = [
+  '''\.gitleaks\.toml$''',
+  '''.*\.example$''',          # .env.example files (placeholders only)
+  '''postmortems/.*\.md$''',   # postmortems may reference sanitized secret prefixes
+  '''docs/.*\.md$''',          # docs may show example-format strings
+  '''runbooks/.*\.md$''',
+  '''dbt_project/target/''',
+  '''pulsetrack-study/''',     # study/note files for portfolio
+]
+
+# Common false positives
+regexes = [
+  '''<<FILL>>''',
+  '''YOUR_[A-Z_]+_HERE''',
+  '''xxxxxxxx''',
+  '''sk-ant-EXAMPLE''',
+]
+
+# Specific commits to ignore (e.g. historical fixes already addressed)
+# Add SHA after rotation of any leaked credential.
+commits = []
