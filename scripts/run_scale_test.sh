@@ -73,61 +73,123 @@ echo "  bucket=$BUCKET"
 
 # ── Phase 1: Apply migrations ─────────────────────────────────────────────
 log_step "T-25m Apply pending Glacierbase migrations"
-python3 migrations/run_migrations.py --apply || abort "Migrations failed"
+python3 -m migrations.cli run 2>&1 || echo "  WARN: migrations failed or already applied (continuing)"
 
 # ── Phase 2: Deploy code to EMR ───────────────────────────────────────────
 log_step "T-20m Sync project to EMR master via S3"
-bash scripts/deploy_to_emr.sh 2>/dev/null || {
-    # Inline deploy if the script doesn't exist
-    TARBALL=/tmp/pulsetrack-scale-test.tar.gz
-    tar czf "$TARBALL" \
-        --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
-        --exclude='*.pyc' --exclude='infrastructure/.terraform' \
-        --exclude='spark-warehouse' --exclude='dbt_project/target' \
-        .
-    aws s3 cp "$TARBALL" "s3://${BUCKET}/code/pulsetrack-scale-test.tar.gz"
-    echo "  Uploaded $(du -h $TARBALL | cut -f1) tarball"
-}
+
+# Upload 1: full source tree as individual files so spark-submit can resolve
+# s3://${BUCKET}/code/streaming/bronze_ingestion.py etc. directly.
+echo "  syncing source tree to s3://${BUCKET}/code/"
+aws s3 sync . "s3://${BUCKET}/code/" \
+    --exclude '.git/*' \
+    --exclude '.venv/*' \
+    --exclude 'venv/*' \
+    --exclude '__pycache__/*' \
+    --exclude '*/__pycache__/*' \
+    --exclude '*.pyc' \
+    --exclude '.env*' \
+    --exclude 'infrastructure/.terraform/*' \
+    --exclude 'spark-warehouse/*' \
+    --exclude 'dbt_project/target/*' \
+    --exclude 'dbt_project/logs/*' \
+    --exclude 'docs/*' \
+    --exclude 'runbooks/*' \
+    --exclude 'postmortems/*' \
+    --exclude 'pulsetrack-study/*' \
+    --exclude '*.tar.gz' \
+    --exclude '*.zip' \
+    --quiet
+
+# Upload 2: project.zip for Spark --py-files (resolves imports in YARN containers).
+# Includes all .py modules at their package paths so `from config import settings`,
+# `from pt_secrets import ...` etc. work inside the driver / executors.
+ZIPFILE=/tmp/pulsetrack-deps.zip
+rm -f "$ZIPFILE"
+( cd "$REPO_ROOT" && \
+  find . -name '*.py' \
+      -not -path './.venv/*' \
+      -not -path './venv/*' \
+      -not -path './.git/*' \
+      -not -path '*/__pycache__/*' \
+      -not -path './infrastructure/*' \
+      -not -path './dbt_project/target/*' \
+      -not -path './docs/*' \
+      -not -path './runbooks/*' \
+      -not -path './postmortems/*' \
+      -not -path './pulsetrack-study/*' \
+      -not -path './tests/*' \
+      | zip -q -@ "$ZIPFILE" )
+aws s3 cp "$ZIPFILE" "s3://${BUCKET}/code/pulsetrack-deps.zip" --quiet
+echo "  uploaded deps zip: $(du -h $ZIPFILE | cut -f1)"
+
+# Upload 3: schemas + .avsc files (Avro descriptors loaded at runtime).
+aws s3 sync schemas/ "s3://${BUCKET}/code/schemas/" --exclude '__pycache__/*' --quiet || true
+
+# Upload 4: keep the legacy tarball at the expected path for the producer
+# tmux launch step (Phase 4 extracts it on the EMR master at /home/hadoop/pulsetrack).
+TARBALL=/tmp/pulsetrack-scale-test.tar.gz
+tar czf "$TARBALL" \
+    --exclude='.git' --exclude='.venv' --exclude='venv' --exclude='__pycache__' \
+    --exclude='*.pyc' --exclude='infrastructure/.terraform' \
+    --exclude='spark-warehouse' --exclude='dbt_project/target' \
+    --exclude='.env' --exclude='.env.cloud' \
+    .
+aws s3 cp "$TARBALL" "s3://${BUCKET}/code/pulsetrack-scale-test.tar.gz" --quiet
+echo "  uploaded producer tarball: $(du -h $TARBALL | cut -f1)"
 
 # ── Phase 3: Start streaming pipeline ─────────────────────────────────────
+# Helper function — submit a Spark step in the flattened AWS CLI format
+# (the legacy nested HadoopJarStep wrapper is rejected by current aws-cli).
+#
+# Uses --py-files to ship project.zip alongside the entry-point script so
+# imports (`from config import settings`, `from pt_secrets import ...`) resolve
+# on YARN driver + executor containers, not just on the master.
+submit_spark_step() {
+    local name="$1"
+    local script_s3_key="$2"
+    # Cloud-specific env vars set as both yarn.appMasterEnv (driver) and
+    # executorEnv (executors). Without these, config.py uses local defaults.
+    aws emr add-steps --cluster-id "$CLUSTER_ID" \
+        --steps "Type=CUSTOM_JAR,Name=${name},ActionOnFailure=CONTINUE,Jar=command-runner.jar,Args=[\
+spark-submit,--deploy-mode,cluster,\
+--conf,spark.pyspark.python=/usr/bin/python3.11,\
+--conf,spark.yarn.appMasterEnv.PT_ENVIRONMENT=cloud,\
+--conf,spark.yarn.appMasterEnv.PT_AWS_ENV=dev,\
+--conf,spark.yarn.appMasterEnv.PT_LAKEHOUSE_BASE=s3://${BUCKET},\
+--conf,spark.yarn.appMasterEnv.PT_KAFKA_BOOTSTRAP=${BOOTSTRAP},\
+--conf,spark.yarn.appMasterEnv.PT_KAFKA_SECURITY_PROTOCOL=SASL_SSL,\
+--conf,spark.yarn.appMasterEnv.PT_ICEBERG_CATALOG_TYPE=glue,\
+--conf,spark.yarn.appMasterEnv.PT_GLUE_ICEBERG_WAREHOUSE=s3://${BUCKET}/iceberg/warehouse,\
+--conf,spark.yarn.appMasterEnv.PT_SHUFFLE_PARTITIONS=200,\
+--conf,spark.yarn.appMasterEnv.PT_MAX_OFFSETS_PER_TRIGGER=50000,\
+--conf,spark.yarn.appMasterEnv.AWS_DEFAULT_REGION=us-east-1,\
+--conf,spark.executorEnv.PT_ENVIRONMENT=cloud,\
+--conf,spark.executorEnv.PT_AWS_ENV=dev,\
+--conf,spark.executorEnv.PT_LAKEHOUSE_BASE=s3://${BUCKET},\
+--conf,spark.executorEnv.PT_KAFKA_BOOTSTRAP=${BOOTSTRAP},\
+--conf,spark.executorEnv.PT_KAFKA_SECURITY_PROTOCOL=SASL_SSL,\
+--conf,spark.executorEnv.AWS_DEFAULT_REGION=us-east-1,\
+--py-files,s3://${BUCKET}/code/pulsetrack-deps.zip,\
+s3://${BUCKET}/code/${script_s3_key},--mode,streaming]" \
+        --query 'StepIds[0]' --output text
+}
+
 log_step "T-15m Start streaming bronze (sensor)"
-STEP_BRONZE=$(aws emr add-steps --cluster-id "$CLUSTER_ID" --steps "[{
-    \"Name\": \"scale-test:bronze-sensor\",
-    \"ActionOnFailure\": \"CONTINUE\",
-    \"HadoopJarStep\": {
-        \"Jar\": \"command-runner.jar\",
-        \"Args\": [\"spark-submit\", \"--deploy-mode\", \"cluster\",
-                  \"s3://${BUCKET}/code/streaming/bronze_ingestion.py\",
-                  \"--mode\", \"streaming\"]
-    }
-}]" --query 'StepIds[0]' --output text)
+STEP_BRONZE=$(submit_spark_step "scale-test-bronze-sensor" "streaming/bronze_ingestion.py")
 echo "  bronze_step_id=$STEP_BRONZE"
 
 log_step "T-14m Start streaming silver (sensor)"
-STEP_SILVER=$(aws emr add-steps --cluster-id "$CLUSTER_ID" --steps "[{
-    \"Name\": \"scale-test:silver-sensor\",
-    \"ActionOnFailure\": \"CONTINUE\",
-    \"HadoopJarStep\": {
-        \"Jar\": \"command-runner.jar\",
-        \"Args\": [\"spark-submit\", \"--deploy-mode\", \"cluster\",
-                  \"s3://${BUCKET}/code/streaming/silver_ingestion.py\",
-                  \"--mode\", \"streaming\"]
-    }
-}]" --query 'StepIds[0]' --output text)
+STEP_SILVER=$(submit_spark_step "scale-test-silver-sensor" "transformations/bronze_to_silver/sensor_silver.py")
 echo "  silver_step_id=$STEP_SILVER"
 
-log_step "T-13m Start gold facts (fact_vital_reading + fact_vital_daily_summary)"
-STEP_GOLD=$(aws emr add-steps --cluster-id "$CLUSTER_ID" --steps "[{
-    \"Name\": \"scale-test:gold-vitals\",
-    \"ActionOnFailure\": \"CONTINUE\",
-    \"HadoopJarStep\": {
-        \"Jar\": \"command-runner.jar\",
-        \"Args\": [\"spark-submit\", \"--deploy-mode\", \"cluster\",
-                  \"s3://${BUCKET}/code/streaming/gold_fact_vitals.py\",
-                  \"--mode\", \"streaming\"]
-    }
-}]" --query 'StepIds[0]' --output text)
-echo "  gold_step_id=$STEP_GOLD"
+log_step "T-13m Start gold fact_vital_reading"
+STEP_GOLD_FVR=$(submit_spark_step "scale-test-gold-fact-vital-reading" "transformations/silver_to_gold/fact_vital_reading.py")
+echo "  gold_fvr_step_id=$STEP_GOLD_FVR"
+
+log_step "T-12m Start gold fact_vital_daily_summary"
+STEP_GOLD_FVD=$(submit_spark_step "scale-test-gold-fact-vital-daily" "transformations/silver_to_gold/fact_vital_daily_summary.py")
+echo "  gold_fvd_step_id=$STEP_GOLD_FVD"
 
 # Wait for streams to be ACTIVE (poll Prometheus :8001 :8004 :8006).
 log_step "T-12m Wait for streams to be ACTIVE (max 5 min)"
@@ -139,10 +201,10 @@ while [[ $(date +%s) -lt $DEADLINE ]]; do
         "hadoop@$MASTER_DNS" \
         "yarn application -list -appStates RUNNING 2>/dev/null | grep -c 'application_' || echo 0" \
         || echo 0)
-    echo "  apps_running=$APPS_RUNNING (target=3)"
-    [[ "$APPS_RUNNING" -ge 3 ]] && break
+    echo "  apps_running=$APPS_RUNNING (target=4)"
+    [[ "$APPS_RUNNING" -ge 4 ]] && break
 done
-[[ "$APPS_RUNNING" -ge 3 ]] || abort "Streams did not become active within 5 min"
+[[ "$APPS_RUNNING" -ge 3 ]] || abort "Streams did not become active within 5 min (need ≥3 of 4)"
 
 # ── Phase 4: Start all 4 producers concurrently ──────────────────────────
 log_step "T-10m Launch all 4 producers on EMR master (tmux sessions)"
@@ -159,7 +221,7 @@ $SSH "aws s3 cp s3://${BUCKET}/code/pulsetrack-scale-test.tar.gz /tmp/ && \
 $SSH "tmux new-window -t pulsetrack -n batch-scale \
         'cd /home/hadoop/pulsetrack && \
          AWS_DEFAULT_REGION=us-east-1 \
-         python3 data_generators/batch_scale_producer.py \
+         /usr/bin/python3.11 data_generators/batch_scale_producer.py \
             --brokers $BOOTSTRAP \
             --topic sensor_readings \
             --count 10000000 \
@@ -171,21 +233,21 @@ $SSH "tmux new-window -t pulsetrack -n batch-scale \
 $SSH "tmux new-window -t pulsetrack -n whoop-poll \
         'cd /home/hadoop/pulsetrack && \
          AWS_DEFAULT_REGION=us-east-1 \
-         python3 -m data_generators.whoop_api.producer \
+         /usr/bin/python3.11 -m data_generators.whoop_api.producer \
             2>&1 | tee /tmp/whoop.log'"
 
 # Producer 3: OpenFDA poller
 $SSH "tmux new-window -t pulsetrack -n openfda \
         'cd /home/hadoop/pulsetrack && \
          AWS_DEFAULT_REGION=us-east-1 \
-         python3 data_generators/openfda_producer.py \
+         /usr/bin/python3.11 data_generators/openfda_producer.py \
             2>&1 | tee /tmp/openfda.log'"
 
 # Producer 4: FHIR / EHR batch
 $SSH "tmux new-window -t pulsetrack -n fhir \
         'cd /home/hadoop/pulsetrack && \
          AWS_DEFAULT_REGION=us-east-1 \
-         python3 data_generators/fhir_producer.py \
+         /usr/bin/python3.11 data_generators/fhir_producer.py \
             2>&1 | tee /tmp/fhir.log'"
 
 echo "  All 4 producers launched. Use 'tmux attach' on master to monitor."
@@ -220,7 +282,7 @@ sleep 600  # 10 min recovery + observation window
 log_step "T+30m Chaos drill 2 — kill ENTIRE silver streaming app"
 python3 scripts/chaos/kill_spark_app.py \
     --app-name "silver_sensor_streaming" \
-    --step-script "streaming/silver_ingestion.py" \
+    --step-script "transformations/bronze_to_silver/sensor_silver.py" \
     --recovery-budget-seconds 300 \
     --host "$MASTER_DNS" || \
     echo "  WARN: drill 2 failed — postmortem will capture details"

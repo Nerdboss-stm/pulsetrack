@@ -42,6 +42,27 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+# Load .env into os.environ BEFORE config import — this lets pydantic Settings
+# pick up overrides AND makes PT_SNOWFLAKE_* (not currently in Settings) visible
+# to the os.environ.get() fallback in build_snowflake().
+#
+# Why python-dotenv instead of `set -a && source .env`:
+#     The shell-sourcing pattern evaluates each line as a command, which
+#     corrupts (and echoes!) values containing `:` / `/` / spaces. python-dotenv
+#     is a deterministic key=value parser with no shell evaluation. See
+#     postmortems/2026-05-11_secrets_leaked_via_shell_source.md.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(dotenv_path=REPO_ROOT / ".env", override=False)
+except ImportError:
+    # python-dotenv is optional in the test environment; the bootstrap still
+    # works if the caller pre-exported the env vars (e.g., from CI secrets).
+    print(
+        "[bootstrap] WARN: python-dotenv not installed; relying on shell-exported env",
+        file=sys.stderr,
+    )
+
 from config import settings  # noqa: E402
 
 try:

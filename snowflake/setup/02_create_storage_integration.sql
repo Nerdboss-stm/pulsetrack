@@ -41,12 +41,27 @@ CREATE OR REPLACE EXTERNAL VOLUME PULSETRACK_VOL
         (
             NAME = 'pulsetrack-lakehouse-dev'
             STORAGE_PROVIDER  = 'S3'
-            STORAGE_BASE_URL  = 's3://pulsetrack-lakehouse-dev-03a28ee7/iceberg/warehouse/'
+            STORAGE_BASE_URL  = 's3://pulsetrack-lakehouse-dev-03a28ee7/'
             STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::960341592614:role/snowflake-pulsetrack-s3'
         )
     )
     ALLOW_WRITES = FALSE
-    COMMENT      = 'PulseTrack Iceberg warehouse on S3 — read-only from Snowflake';
+    COMMENT      = 'PulseTrack lakehouse on S3 - bucket root so bronze/silver/gold all reachable. Read-only from Snowflake.';
+
+-- Note (2026-05-11): originally pointed at iceberg/warehouse/ but the actual
+-- Spark pipeline writes Iceberg metadata to bronze/sensor_readings/metadata/,
+-- silver/sensor_readings/metadata/, gold/fact_vital_reading/metadata/ etc.
+-- (see config.py's bronze_sensor, silver_sensor, gold_fact_vital_reading
+-- properties). The two conventions didn't match. Fix: point external volume
+-- at bucket root so all 3 medallion layers are subpaths.
+--
+-- WARNING: CREATE OR REPLACE on STORAGE INTEGRATION + CATALOG INTEGRATION
+-- regenerates their AWS external IDs. AFTER any re-run of those two:
+--     1. DESC INTEGRATION PULSETRACK_S3;          -- get new STORAGE_AWS_EXTERNAL_ID
+--     2. DESC CATALOG INTEGRATION PULSETRACK_GLUE;  -- get new GLUE_AWS_EXTERNAL_ID
+--     3. DESC EXTERNAL VOLUME PULSETRACK_VOL;     -- get volume's STORAGE_AWS_EXTERNAL_ID
+--     4. Update the 2 IAM role trust policies in AWS with the new external IDs
+-- The EXTERNAL VOLUME generates its OWN external ID separate from the integration.
 
 -- ── Catalog integration ─────────────────────────────────────────────────────
 -- Tells Snowflake to use AWS Glue as the Iceberg catalog. Now ``SELECT *
