@@ -604,12 +604,24 @@ try:
         with conn.cursor() as cur:
             # Refresh EXTERNAL TABLE pointers so Snowflake sees the latest
             # Glue catalog state (Iceberg snapshot moves with every commit).
-            for ext in ("EXT_FACT_VITAL_READING", "EXT_FACT_VITAL_DAILY_SUMMARY"):
+            # Note: per snowflake/setup/05_create_external_tables.sql, the
+            # actual external tables are SENSOR_READINGS_RAW (bronze),
+            # SILVER_SENSOR_READINGS, SILVER_EHR_CONDITIONS,
+            # SILVER_IDENTITY_BRIDGE, and FACT_VITAL_DAILY_SUMMARY.
+            # FACT_VITAL_READING is intentionally NOT externalized (too large;
+            # accessed via Athena or direct Spark instead).
+            for ext, schema in (
+                ("EXT_SENSOR_READINGS_RAW", "BRONZE"),
+                ("EXT_SILVER_SENSOR_READINGS", "SILVER"),
+                ("EXT_SILVER_EHR_CONDITIONS", "SILVER"),
+                ("EXT_SILVER_IDENTITY_BRIDGE", "SILVER"),
+                ("EXT_FACT_VITAL_DAILY_SUMMARY", "GOLD"),
+            ):
                 try:
-                    cur.execute(f"ALTER EXTERNAL TABLE PULSETRACK.GOLD.{ext} REFRESH")
-                    print(f"    refreshed: PULSETRACK.GOLD.{ext}")
+                    cur.execute(f"ALTER EXTERNAL TABLE PULSETRACK.{schema}.{ext} REFRESH")
+                    print(f"    refreshed: PULSETRACK.{schema}.{ext}")
                 except Exception as e:
-                    print(f"    refresh skipped {ext}: {e}")
+                    print(f"    refresh skipped {ext}: {str(e)[:80]}")
             # Query the 4 analytics views
             for view in ("VW_PATIENT_HEALTH_360", "VW_ANOMALY_DASHBOARD",
                          "VW_VITAL_TRENDS", "VW_DEVICE_FLEET_HEALTH"):
