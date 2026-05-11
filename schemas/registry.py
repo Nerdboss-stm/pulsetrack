@@ -14,10 +14,16 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
-from confluent_kafka.schema_registry import Schema, SchemaRegistryClient
-from confluent_kafka.schema_registry.avro import AvroDeserializer, AvroSerializer
+# Lazy-imported in functions that use them. The Confluent Schema Registry
+# client transitively depends on httpx (added in confluent-kafka>=2.6.x),
+# which isn't installed everywhere on EMR YARN containers. Streaming
+# drivers that only need ``load_schema_str(filename)`` (reading the local
+# .avsc file as text) don't need the registry client at all, so we
+# defer the heavy import.
+if TYPE_CHECKING:
+    from confluent_kafka.schema_registry import SchemaRegistryClient
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import settings  # noqa: E402
@@ -34,7 +40,10 @@ SCHEMA_FILES: dict[str, str] = {
 }
 
 
-def get_schema_registry_client() -> SchemaRegistryClient:
+def get_schema_registry_client() -> "SchemaRegistryClient":
+    # Lazy import — see module docstring.
+    from confluent_kafka.schema_registry import SchemaRegistryClient
+
     config: dict[str, str] = {"url": settings.schema_registry_url}
     if settings.schema_registry_api_key:
         config["basic.auth.user.info"] = (
@@ -44,12 +53,29 @@ def get_schema_registry_client() -> SchemaRegistryClient:
 
 
 def load_schema_str(filename: str) -> str:
+    """Read an .avsc file from the schemas/ package.
+
+    Zip-safe: handles both local-filesystem paths and PySpark cluster mode
+    where this module lives inside ``pulsetrack-deps.zip`` (--py-files).
+    Plain ``pathlib.Path.read_text()`` fails with NotADirectoryError on the
+    zip path; ``importlib.resources.files()`` works in both cases.
+    """
+    # Fast path: real filesystem
     path = SCHEMAS_DIR / filename
-    return path.read_text()
+    try:
+        return path.read_text()
+    except (NotADirectoryError, FileNotFoundError):
+        pass
+    # Fallback: zip-aware resource loader
+    from importlib.resources import files
+
+    return files("schemas").joinpath(filename).read_text()
 
 
 def register_all_schemas() -> dict[str, int]:
     """Idempotently register every schema. Returns subject → schema_id."""
+    from confluent_kafka.schema_registry import Schema  # lazy
+
     client = get_schema_registry_client()
     registered: dict[str, int] = {}
     for subject, filename in SCHEMA_FILES.items():
@@ -73,12 +99,14 @@ def register_all_schemas() -> dict[str, int]:
 def get_avro_serializer(
     subject: str,
     to_dict: Optional[Callable] = None,
-) -> AvroSerializer:
+):
     """Build an AvroSerializer for `subject`.
 
     `to_dict` maps a Python object to a dict matching the schema. Pass None
     when producing dicts directly.
     """
+    from confluent_kafka.schema_registry.avro import AvroSerializer  # lazy
+
     if subject not in SCHEMA_FILES:
         raise KeyError(f"Unknown subject: {subject}. Known: {sorted(SCHEMA_FILES)}")
     client = get_schema_registry_client()
@@ -89,12 +117,14 @@ def get_avro_serializer(
 def get_avro_deserializer(
     subject: str,
     from_dict: Optional[Callable] = None,
-) -> AvroDeserializer:
+):
     """Build an AvroDeserializer for `subject`.
 
     `from_dict` maps a dict back to a Python object. Pass None to receive
     plain dicts in your consumer.
     """
+    from confluent_kafka.schema_registry.avro import AvroDeserializer  # lazy
+
     if subject not in SCHEMA_FILES:
         raise KeyError(f"Unknown subject: {subject}. Known: {sorted(SCHEMA_FILES)}")
     client = get_schema_registry_client()

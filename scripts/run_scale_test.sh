@@ -107,13 +107,14 @@ aws s3 sync . "s3://${BUCKET}/code/" \
 ZIPFILE=/tmp/pulsetrack-deps.zip
 rm -f "$ZIPFILE"
 ( cd "$REPO_ROOT" && \
-  find . -name '*.py' \
+  find . \( -name '*.py' -o -name '*.avsc' -o -name '*.json' \) \
       -not -path './.venv/*' \
       -not -path './venv/*' \
       -not -path './.git/*' \
       -not -path '*/__pycache__/*' \
       -not -path './infrastructure/*' \
       -not -path './dbt_project/target/*' \
+      -not -path './dbt_project/logs/*' \
       -not -path './docs/*' \
       -not -path './runbooks/*' \
       -not -path './postmortems/*' \
@@ -148,47 +149,127 @@ echo "  uploaded producer tarball: $(du -h $TARBALL | cut -f1)"
 submit_spark_step() {
     local name="$1"
     local script_s3_key="$2"
-    # Cloud-specific env vars set as both yarn.appMasterEnv (driver) and
-    # executorEnv (executors). Without these, config.py uses local defaults.
-    aws emr add-steps --cluster-id "$CLUSTER_ID" \
-        --steps "Type=CUSTOM_JAR,Name=${name},ActionOnFailure=CONTINUE,Jar=command-runner.jar,Args=[\
-spark-submit,--deploy-mode,cluster,\
---conf,spark.pyspark.python=/usr/bin/python3.11,\
---conf,spark.yarn.appMasterEnv.PT_ENVIRONMENT=cloud,\
---conf,spark.yarn.appMasterEnv.PT_AWS_ENV=dev,\
---conf,spark.yarn.appMasterEnv.PT_LAKEHOUSE_BASE=s3://${BUCKET},\
---conf,spark.yarn.appMasterEnv.PT_KAFKA_BOOTSTRAP=${BOOTSTRAP},\
---conf,spark.yarn.appMasterEnv.PT_KAFKA_SECURITY_PROTOCOL=SASL_SSL,\
---conf,spark.yarn.appMasterEnv.PT_ICEBERG_CATALOG_TYPE=glue,\
---conf,spark.yarn.appMasterEnv.PT_GLUE_ICEBERG_WAREHOUSE=s3://${BUCKET}/iceberg/warehouse,\
---conf,spark.yarn.appMasterEnv.PT_SHUFFLE_PARTITIONS=200,\
---conf,spark.yarn.appMasterEnv.PT_MAX_OFFSETS_PER_TRIGGER=50000,\
---conf,spark.yarn.appMasterEnv.AWS_DEFAULT_REGION=us-east-1,\
---conf,spark.executorEnv.PT_ENVIRONMENT=cloud,\
---conf,spark.executorEnv.PT_AWS_ENV=dev,\
---conf,spark.executorEnv.PT_LAKEHOUSE_BASE=s3://${BUCKET},\
---conf,spark.executorEnv.PT_KAFKA_BOOTSTRAP=${BOOTSTRAP},\
---conf,spark.executorEnv.PT_KAFKA_SECURITY_PROTOCOL=SASL_SSL,\
---conf,spark.executorEnv.AWS_DEFAULT_REGION=us-east-1,\
---py-files,s3://${BUCKET}/code/pulsetrack-deps.zip,\
-s3://${BUCKET}/code/${script_s3_key},--mode,streaming]" \
+    # Extra CLI args for the script — pass as space-separated; built into the
+    # JSON Args array below.
+    local extra_args_str="${3:-}"
+    # Spark dependencies. spark-sql-kafka-0-10 + spark-avro NOT in EMR stock.
+    # MSK IAM auth jar (aws-msk-iam-auth-2.3.2.jar) IS pre-installed on EMR 7.13.
+    # Maven Central only has stock 3.5.x releases (no 3.5.6-amzn-2); 3.5.3 is fine.
+    local spark_packages="org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3,org.apache.spark:spark-avro_2.12:3.5.3"
+
+    # Use JSON file for --steps because the bracketed Args=[...] syntax uses
+    # commas as separators — that breaks --packages (which itself uses
+    # comma-separated package coords). JSON has no such ambiguity.
+    local steps_json
+    steps_json=$(mktemp /tmp/emr-step-XXXXXX.json)
+    python3 -c "
+import json, os, sys, shlex
+extra = shlex.split('''${extra_args_str}''')
+step = [{
+    'Type': 'CUSTOM_JAR',
+    'Name': '${name}',
+    'ActionOnFailure': 'CONTINUE',
+    'Jar': 'command-runner.jar',
+    'Args': [
+        'spark-submit', '--deploy-mode', 'cluster',
+        '--packages', '${spark_packages}',
+        '--conf', 'spark.pyspark.python=/usr/bin/python3.11',
+        '--conf', 'spark.yarn.appMasterEnv.PT_ENVIRONMENT=cloud',
+        '--conf', 'spark.yarn.appMasterEnv.PT_AWS_ENV=dev',
+        '--conf', 'spark.yarn.appMasterEnv.PT_LAKEHOUSE_BASE=s3://${BUCKET}',
+        '--conf', 'spark.yarn.appMasterEnv.PT_KAFKA_BOOTSTRAP=${BOOTSTRAP}',
+        '--conf', 'spark.yarn.appMasterEnv.PT_KAFKA_SECURITY_PROTOCOL=SASL_SSL',
+        '--conf', 'spark.yarn.appMasterEnv.PT_ICEBERG_CATALOG_TYPE=glue',
+        '--conf', 'spark.yarn.appMasterEnv.PT_GLUE_ICEBERG_WAREHOUSE=s3://${BUCKET}/iceberg/warehouse',
+        '--conf', 'spark.yarn.appMasterEnv.PT_SHUFFLE_PARTITIONS=200',
+        '--conf', 'spark.yarn.appMasterEnv.PT_MAX_OFFSETS_PER_TRIGGER=50000',
+        '--conf', 'spark.yarn.appMasterEnv.AWS_DEFAULT_REGION=us-east-1',
+        '--conf', 'spark.executorEnv.PT_ENVIRONMENT=cloud',
+        '--conf', 'spark.executorEnv.PT_AWS_ENV=dev',
+        '--conf', 'spark.executorEnv.PT_LAKEHOUSE_BASE=s3://${BUCKET}',
+        '--conf', 'spark.executorEnv.PT_KAFKA_BOOTSTRAP=${BOOTSTRAP}',
+        '--conf', 'spark.executorEnv.PT_KAFKA_SECURITY_PROTOCOL=SASL_SSL',
+        '--conf', 'spark.executorEnv.AWS_DEFAULT_REGION=us-east-1',
+        '--py-files', 's3://${BUCKET}/code/pulsetrack-deps.zip',
+        's3://${BUCKET}/code/${script_s3_key}',
+    ] + extra,
+}]
+json.dump(step, open('${steps_json}', 'w'))
+"
+    aws emr add-steps --cluster-id "$CLUSTER_ID" --steps "file://${steps_json}" \
         --query 'StepIds[0]' --output text
+    rm -f "$steps_json"
 }
 
+# ── Phase 2.5: Create Kafka topics before streaming subscribes ────────────
+# MSK Serverless does NOT auto-create topics; consumers fail with
+# UnknownTopicOrPartitionException if they subscribe before producer creates.
+# Pre-create via the existing scripts/produce_sensor_records.py's admin path
+# (it does ensure_topic for sensor_readings; we need pharmacy_events too).
+log_step "T-16m Create Kafka topics (sensor_readings, pharmacy_events, pulsetrack_dlq)"
+# Run admin from EMR master (same VPC) — local execution times out on MSK
+# Serverless metadata calls due to higher cross-region latency.
+ssh -i ~/.ssh/pulsetrack-emr.pem -o StrictHostKeyChecking=no -o BatchMode=yes \
+    "hadoop@$MASTER_DNS" \
+    "AWS_DEFAULT_REGION=us-east-1 /usr/bin/python3.11 - <<'PYEOF'
+import socket, sys, time
+from aws_msk_iam_sasl_signer import MSKAuthTokenProvider
+from confluent_kafka.admin import AdminClient, NewTopic
+from confluent_kafka import KafkaException
+
+REGION = 'us-east-1'
+BROKERS = '${BOOTSTRAP}'
+TOPICS = [('sensor_readings', 4), ('pharmacy_events', 1), ('pulsetrack_dlq', 1)]
+
+def oauth_cb(_):
+    tok, exp = MSKAuthTokenProvider.generate_auth_token(REGION)
+    return tok, time.time() + exp / 1000.0
+
+admin = AdminClient({
+    'bootstrap.servers': BROKERS,
+    'security.protocol': 'SASL_SSL',
+    'sasl.mechanisms': 'OAUTHBEARER',
+    'oauth_cb': oauth_cb,
+    'client.id': socket.gethostname(),
+})
+for _ in range(10):
+    admin.poll(0.5)
+
+req = [NewTopic(n, num_partitions=p, replication_factor=3) for n, p in TOPICS]
+futs = admin.create_topics(req)
+for name, fut in futs.items():
+    deadline = time.time() + 180
+    while not fut.done() and time.time() < deadline:
+        admin.poll(0.5)
+    try:
+        fut.result(timeout=10)
+        print(f'  created topic: {name}')
+    except KafkaException as e:
+        if 'already exists' in str(e).lower():
+            print(f'  topic {name} already exists (OK)')
+        else:
+            print(f'  topic {name} ERROR: {e}', file=sys.stderr)
+PYEOF
+" || echo "  WARN: topic creation had issues (continuing)"
+
 log_step "T-15m Start streaming bronze (sensor)"
-STEP_BRONZE=$(submit_spark_step "scale-test-bronze-sensor" "streaming/bronze_ingestion.py")
+# bronze: --trigger processing (default) + --format iceberg
+STEP_BRONZE=$(submit_spark_step "scale-test-bronze-sensor" "streaming/bronze_ingestion.py" "--trigger processing --format iceberg")
 echo "  bronze_step_id=$STEP_BRONZE"
 
 log_step "T-14m Start streaming silver (sensor)"
-STEP_SILVER=$(submit_spark_step "scale-test-silver-sensor" "transformations/bronze_to_silver/sensor_silver.py")
+# silver: --mode streaming (default) + --format iceberg
+STEP_SILVER=$(submit_spark_step "scale-test-silver-sensor" "transformations/bronze_to_silver/sensor_silver.py" "--mode streaming --format iceberg")
 echo "  silver_step_id=$STEP_SILVER"
 
 log_step "T-13m Start gold fact_vital_reading"
-STEP_GOLD_FVR=$(submit_spark_step "scale-test-gold-fact-vital-reading" "transformations/silver_to_gold/fact_vital_reading.py")
+# gold fact_vital_reading: default mode is BATCH; explicitly set streaming
+STEP_GOLD_FVR=$(submit_spark_step "scale-test-gold-fact-vital-reading" "transformations/silver_to_gold/fact_vital_reading.py" "--mode streaming --format iceberg")
 echo "  gold_fvr_step_id=$STEP_GOLD_FVR"
 
 log_step "T-12m Start gold fact_vital_daily_summary"
-STEP_GOLD_FVD=$(submit_spark_step "scale-test-gold-fact-vital-daily" "transformations/silver_to_gold/fact_vital_daily_summary.py")
+# gold fact_vital_daily_summary: default mode is BATCH; explicitly set streaming
+STEP_GOLD_FVD=$(submit_spark_step "scale-test-gold-fact-vital-daily" "transformations/silver_to_gold/fact_vital_daily_summary.py" "--mode streaming --format iceberg")
 echo "  gold_fvd_step_id=$STEP_GOLD_FVD"
 
 # Wait for streams to be ACTIVE (poll Prometheus :8001 :8004 :8006).
