@@ -7,6 +7,13 @@
 --
 -- Powers BI line charts ("is heart rate trending up vs baseline?") and
 -- feeds the anomaly dashboard via ABS(z_score_30d) > 3 threshold.
+--
+-- Schema notes (vs the original aspirational dbt-mart version):
+--   - metric_name comes from JOIN to GOLD.DIM_METRIC (the fact table only
+--     stores the metric_key surrogate).
+--   - event_date comes from JOIN to GOLD.DIM_DATE.
+--   - valid_reading_count = reading_count - anomaly_count (the fact table
+--     stores both as separate columns).
 -- ============================================================================
 
 CREATE OR REPLACE VIEW PULSETRACK.ANALYTICS.VW_VITAL_TRENDS
@@ -15,15 +22,17 @@ AS
 
 WITH daily AS (
     SELECT
-        patient_key,
-        metric_key,
-        metric_name,
-        date_key,
-        event_date,
-        avg_value,
-        valid_reading_count
-    FROM PULSETRACK.GOLD.FACT_VITAL_DAILY_SUMMARY
-    WHERE valid_reading_count > 0
+        f.patient_key,
+        f.metric_key,
+        m.metric_name,
+        f.date_key,
+        d.date                                             AS event_date,
+        f.avg_value,
+        f.reading_count - COALESCE(f.anomaly_count, 0)     AS valid_reading_count
+    FROM PULSETRACK.GOLD.FACT_VITAL_DAILY_SUMMARY  AS f
+    LEFT JOIN PULSETRACK.GOLD.DIM_METRIC           AS m USING (metric_key)
+    LEFT JOIN PULSETRACK.GOLD.DIM_DATE             AS d USING (date_key)
+    WHERE f.reading_count > 0
 )
 
 SELECT

@@ -23,7 +23,7 @@
 | `fact_vital_daily_summary` | ❌ 0 rows | Streaming query was cancelled before its first micro-batch committed. |
 | Silver `kafka_timestamp` + `silver_write_ts` instrumentation | ⚠️ Code shipped; not in this table | The silver-sensor Iceberg table was created in an earlier run with the older schema; Iceberg's `MERGE SCHEMA` wasn't enabled, so the new columns weren't auto-added. Next iteration needs a one-shot `ALTER TABLE … ADD COLUMN` before the stream restarts. |
 | E2E latency p50/p95/p99 | ❌ Not measured | `benchmarks/measure_e2e_latency.py` returned `silver missing latency columns {'silver_write_ts', 'kafka_timestamp'}` because of the above. |
-| Snowflake VIEWS (`VW_PATIENT_HEALTH_360` etc.) | ❌ Don't exist | `snowflake/setup/06_create_views.sql` was never run against the Snowflake account. Tables exist; views are next-iteration provisioning. |
+| Snowflake VIEWS (`VW_PATIENT_HEALTH_360` etc.) | ✅ Provisioned 2026-05-12 | All 6 views created + validated. Counts: vw_device_fleet_health=23, vw_identity_resolution=4, vw_patient_health_360=359, vw_anomaly_dashboard=2,462, vw_vital_trends=0 (depends on fact_vital_daily_summary which is empty), vw_whoop_my_health=0 (no WHOOP API readings yet). Side-discovery: identity_bridge ↔ dim_patient join-key SHA-256 mismatch (see `postmortems/2026-05-12_identity_bridge_join_key_mismatch.md`). |
 
 **What IS proven (and matters most for a senior-DE artifact):**
 
@@ -31,6 +31,7 @@
 - **Real EHR-driven `dim_patient`** (359 rows) — first time the bridge has populated real identities (synthetic EHR generator on S3 + identity_bridge linking sensor `patient_email` → hospital_mrn).
 - **Reversed-ID partitioning is in effect** — verified via Iceberg partition-spec inspection (spec-id=1, fields `[ingestion_timestamp_day (day), rid (identity)]`).
 - **Iceberg snapshots accumulate without corruption** — 223 metadata.json files in bronze, 114 in silver, 80 in gold_fvr — no schema drift, no checkpoint cross-contamination (the checkpoint isolation postmortem from the gap-closure run prevented it).
+- **6 Snowflake analytics views provisioned** (2026-05-12) — `vw_patient_health_360`, `vw_anomaly_dashboard`, `vw_vital_trends`, `vw_device_fleet_health`, `vw_identity_resolution`, `vw_whoop_my_health`. 15 Iceberg tables registered via `PULSETRACK_GLUE` catalog integration. View provisioning revealed two real engineering findings now documented as postmortems: (a) identity-bridge join-key SHA mismatch, (b) duplicate dim_metric rows for `heart_rate_bpm`.
 
 ---
 

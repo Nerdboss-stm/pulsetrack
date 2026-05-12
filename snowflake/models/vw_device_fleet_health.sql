@@ -7,8 +7,14 @@
 -- Tracked proxies:
 --   - invalid_reading_rate: fraction is_valid=FALSE
 --   - late_arrival_rate: fraction is_late_arriving=TRUE
---   - low_battery_rate: fraction battery_pct<20
---   - composite_failure_rate: sum of the above
+--   - composite_failure_rate: invalid + late combined
+--
+-- Schema note: battery_pct lives only on the bronze sensor schema; silver
+-- drops it during cleansing. The original aspirational version of this
+-- view computed `low_battery_rate` from silver — that column doesn't
+-- exist on the silver table, so the metric is dropped here (and would be
+-- re-added when the silver schema is extended to preserve battery_pct
+-- through the cleansing transform).
 -- ============================================================================
 
 CREATE OR REPLACE VIEW PULSETRACK.ANALYTICS.VW_DEVICE_FLEET_HEALTH
@@ -22,7 +28,6 @@ WITH base AS (
         device_id,
         is_valid,
         is_late_arriving,
-        battery_pct,
         event_timestamp
     FROM PULSETRACK.SILVER.SENSOR_READINGS
 ),
@@ -40,9 +45,6 @@ per_firmware AS (
 
         SUM(IFF(is_late_arriving, 1, 0))                                    AS late_arrival_count,
         DIV0(SUM(IFF(is_late_arriving, 1, 0))::DOUBLE, COUNT(*)::DOUBLE)    AS late_arrival_rate,
-
-        SUM(IFF(battery_pct < 20, 1, 0))                                    AS low_battery_count,
-        DIV0(SUM(IFF(battery_pct < 20, 1, 0))::DOUBLE, COUNT(*)::DOUBLE)    AS low_battery_rate,
 
         DIV0(
             (SUM(IFF(NOT is_valid, 1, 0)) + SUM(IFF(is_late_arriving, 1, 0)))::DOUBLE,
@@ -62,12 +64,12 @@ per_firmware_dim AS (
         ANY_VALUE(d.is_current) AS firmware_is_current_anywhere
     FROM per_firmware pf
     LEFT JOIN PULSETRACK.GOLD.DIM_DEVICE d
-        ON  d.device_type = pf.device_type
+        ON  d.device_type      = pf.device_type
         AND d.firmware_version = pf.firmware_version
     GROUP BY pf.device_type, pf.firmware_version, pf.total_readings,
              pf.distinct_devices, pf.invalid_count, pf.invalid_reading_rate,
-             pf.late_arrival_count, pf.late_arrival_rate, pf.low_battery_count,
-             pf.low_battery_rate, pf.composite_failure_rate, pf.first_seen, pf.last_seen
+             pf.late_arrival_count, pf.late_arrival_rate,
+             pf.composite_failure_rate, pf.first_seen, pf.last_seen
 )
 
 SELECT

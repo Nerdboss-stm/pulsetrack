@@ -5,31 +5,51 @@
 -- Drives the "incident review" Snowflake dashboard.
 --
 -- Anomaly criteria (any of):
---   - vital_status IN ('critical', 'warning') (from per-metric range checks)
+--   - vital_status IN ('critical', 'warning') (computed via dim_metric range)
 --   - |z_score_30d| > 3 (statistical outlier vs 30-day patient baseline)
+--
+-- Schema note: the EMR-built fact_vital_reading is minimal
+-- (patient_key, metric_key, date_key, event_timestamp, value, is_valid,
+-- is_late_arriving, source_type). vital_status is derived here via JOIN
+-- to dim_metric (normal_low / normal_high). device_id / firmware_version
+-- / battery_pct don't survive the gold transform — we'd need to join back
+-- to silver to recover them. For dashboard purposes, those are filterable
+-- separately via the device-fleet view.
 -- ============================================================================
 
 CREATE OR REPLACE VIEW PULSETRACK.ANALYTICS.VW_ANOMALY_DASHBOARD
-COMMENT = 'Anomalous vital readings with patient + device + recent-adverse-events context'
+COMMENT = 'Anomalous vital readings with patient + dim_metric context'
 AS
 
-WITH critical_readings AS (
-    -- Per-reading status comes from fact_vital_reading.vital_status
-    -- (computed by the dbt classify_vital_range macro).
+WITH classified_readings AS (
+    -- Derive vital_status from dim_metric normal ranges.
     SELECT
-        f.reading_metric_key,
         f.patient_key,
-        f.metric_name,
-        f.metric_value,
+        f.metric_key,
+        m.metric_name,
+        f.value                                                   AS metric_value,
         f.event_timestamp,
-        CAST(f.event_timestamp AS DATE)             AS event_date,
-        f.device_id,
-        f.firmware_version,
-        f.battery_pct,
+        CAST(f.event_timestamp AS DATE)                           AS event_date,
         f.is_late_arriving,
-        f.vital_status
+        f.source_type,
+        CASE
+            WHEN m.normal_low IS NULL OR m.normal_high IS NULL    THEN 'unknown'
+            -- Critical: more than 50% beyond normal range on either side.
+            WHEN f.value < m.normal_low  - (m.normal_high - m.normal_low) * 0.5 THEN 'critical'
+            WHEN f.value > m.normal_high + (m.normal_high - m.normal_low) * 0.5 THEN 'critical'
+            -- Warning: outside normal range.
+            WHEN f.value < m.normal_low                             THEN 'warning'
+            WHEN f.value > m.normal_high                            THEN 'warning'
+            ELSE                                                          'normal'
+        END                                                       AS vital_status
     FROM PULSETRACK.GOLD.FACT_VITAL_READING AS f
-    WHERE f.vital_status IN ('critical', 'warning')
+    LEFT JOIN PULSETRACK.GOLD.DIM_METRIC    AS m USING (metric_key)
+),
+
+critical_readings AS (
+    SELECT *
+    FROM classified_readings
+    WHERE vital_status IN ('critical', 'warning')
 ),
 
 with_baseline AS (
@@ -52,11 +72,9 @@ with_baseline AS (
 with_patient_context AS (
     SELECT
         wb.*,
-        p.health_complexity_bucket,
-        p.health_complexity_score,
-        p.active_conditions,
-        p.active_medications,
-        p.adverse_event_count
+        p.age_group,
+        p.gender,
+        p.device_count
     FROM with_baseline AS wb
     LEFT JOIN PULSETRACK.GOLD.DIM_PATIENT AS p USING (patient_key)
 )

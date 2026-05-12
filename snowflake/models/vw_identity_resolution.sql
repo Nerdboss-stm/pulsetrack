@@ -8,6 +8,10 @@
 -- Two row kinds in the same view (UNION ALL):
 --   - 'breakdown': per (identifier_type, link_status, link_method)
 --   - 'rollup':    one row with overall link_rate KPI
+--
+-- Schema note: the Glue table column is `match_method`; aliased here to
+-- `link_method` to preserve the analytics naming convention (dbt mart
+-- equivalent + Prometheus gauge label both use `link_method`).
 -- ============================================================================
 
 CREATE OR REPLACE VIEW PULSETRACK.ANALYTICS.VW_IDENTITY_RESOLUTION
@@ -15,7 +19,12 @@ COMMENT = 'Identity bridge link-rate KPIs — breakdown rows + headline rollup'
 AS
 
 WITH bridge AS (
-    SELECT * FROM PULSETRACK.SILVER.IDENTITY_BRIDGE
+    SELECT
+        patient_key,
+        identifier_type,
+        link_status,
+        match_method                          AS link_method
+    FROM PULSETRACK.SILVER.IDENTITY_BRIDGE
 ),
 
 by_breakdown AS (
@@ -23,8 +32,8 @@ by_breakdown AS (
         identifier_type,
         link_status,
         link_method,
-        COUNT(*)                          AS row_count,
-        COUNT(DISTINCT patient_key)       AS unique_patients
+        COUNT(*)                              AS row_count,
+        COUNT(DISTINCT patient_key)           AS unique_patients
     FROM bridge
     GROUP BY 1, 2, 3
 ),
