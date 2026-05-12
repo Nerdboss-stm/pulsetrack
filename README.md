@@ -24,16 +24,18 @@
 
 ## For reviewers — quick map
 
-This project ships **21 Iceberg tables** across Bronze/Silver/Gold + **38 dbt models** + **370 pytest tests at 77% coverage** + real WHOOP-data ingestion + a public-cloud EMR pipeline that runs 10M-event scale tests on real MSK + EMR. Two highest-signal artifacts to look at first:
+This project ships **21 Iceberg tables** across Bronze/Silver/Gold + **38 dbt models** + **370 pytest tests at 77% coverage** + real WHOOP-data ingestion + a public-cloud EMR pipeline that runs 10M-event scale tests on real MSK + EMR. Three highest-signal artifacts to look at first:
 
-1. **[`docs/scale_test_results.md`](docs/scale_test_results.md)** — honest scoping of what runs at 10M scale, with real Iceberg+S3 numbers and the gaps documented (senior-DE artifact).
-2. **[`postmortems/`](postmortems/)** — 9 postmortems including the SEV2 credential-leak from this project's own commit history.
+1. **[`docs/queryable_evidence.md`](docs/queryable_evidence.md)** — every resume claim mapped to a live Snowflake SQL query you can run RIGHT NOW (without resurrecting EMR). 6 analytics views over Iceberg gold are provisioned and queryable.
+2. **[`docs/scale_test_results.md`](docs/scale_test_results.md)** — honest scoping of what runs at 10M scale, with real Iceberg+S3 numbers and the gaps documented (senior-DE artifact).
+3. **[`postmortems/`](postmortems/)** — 11 postmortems including the SEV2 credential-leaks from this project's own commit history.
 
 Notable depth signals:
 - [`migrations/`](migrations/) — Glacierbase-style with CI/CD auto-apply ([workflow](.github/workflows/migration-check.yml))
 - [`docs/s3_partitioning_analysis.md`](docs/s3_partitioning_analysis.md) — reversed-ID partitioning benchmarked against date-first and hash-bucket on real S3 ([results](benchmarks/results/))
 - [`schemas/glue_registry.py`](schemas/glue_registry.py) — Glue SR wire-format handler with magic-byte dispatch between Confluent (local) and Glue (cloud)
 - [`docs/adrs/`](docs/adrs/) — 8 ADRs documenting platform decisions (Iceberg-over-Delta, EMR-over-Databricks, Avro wire format, table format by cluster size, streaming vs batch per layer)
+- [`snowflake/models/`](snowflake/models/) + [`scripts/provision_snowflake_views.py`](scripts/provision_snowflake_views.py) — 6 BI-ready views provisioned on Iceberg via Glue catalog
 - [`pulsetrack-study/PROMPT_9_REPORT.md`](pulsetrack-study/) — exhaustive technical writeup (local artifact)
 
 ---
