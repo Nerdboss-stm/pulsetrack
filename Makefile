@@ -4,7 +4,8 @@
         stream-bronze stream-silver stream-gold \
         batch-silver identity batch-gold \
         compact quality all clean \
-        cloud-upload cloud-bronze cloud-silver cloud-identity cloud-gold cloud-all
+        cloud-upload cloud-bronze cloud-silver cloud-identity cloud-gold cloud-all \
+        snowflake-state snowflake-views snowflake-samples
 
 # ── Setup & quality ─────────────────────────────────────────────────────────
 setup:
@@ -112,3 +113,16 @@ cloud-gold:
 	bash scripts/submit_emr_step.sh transformations/silver_to_gold/fact_lab_result.py
 
 cloud-all: cloud-upload cloud-silver cloud-identity cloud-gold
+
+# ── Snowflake serving layer (Iceberg-backed views) ──────────────────────────
+# These targets read PULSETRACK gold tables on S3+Glue via Snowflake Iceberg.
+# Credentials come from AWS Secrets Manager via pt_secrets (no .env required).
+# Set AWS_PROFILE first: e.g. `AWS_PROFILE=pulsetrack make snowflake-state`.
+snowflake-state:
+	python3 scripts/snowflake_state.py
+
+snowflake-views:
+	python3 scripts/provision_snowflake_views.py
+
+snowflake-samples:
+	python3 scripts/snowflake_view_samples.py
