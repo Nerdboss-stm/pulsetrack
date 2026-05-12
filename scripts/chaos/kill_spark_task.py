@@ -192,29 +192,85 @@ def record_event(
         f.write(json.dumps(event) + "\n")
 
 
+def get_cluster_id() -> str:
+    """Resolve via ``terraform output``."""
+    out = subprocess.check_output(
+        ["terraform", "output", "-raw", "emr_cluster_id"],
+        cwd=REPO_ROOT / "infrastructure",
+        text=True,
+    )
+    return out.strip()
+
+
+def list_core_instances(cluster_id: str) -> list[dict]:
+    """List CORE-type EC2 instances of the EMR cluster via AWS API (no SSH)."""
+    out = subprocess.check_output(
+        [
+            "aws", "emr", "list-instances",
+            "--cluster-id", cluster_id,
+            "--instance-group-types", "CORE",
+            "--instance-states", "RUNNING",
+            "--query", "Instances[].{Id:Ec2InstanceId,Status:Status.State,Ip:PrivateIpAddress}",
+            "--output", "json",
+        ],
+        text=True,
+    )
+    return json.loads(out)
+
+
+def terminate_ec2(instance_id: str) -> None:
+    """Terminate one EC2 instance via API. EMR will detect + replace."""
+    subprocess.check_call([
+        "aws", "ec2", "terminate-instances",
+        "--instance-ids", instance_id,
+        "--no-cli-pager",
+    ])
+
+
+def wait_for_core_replacement(cluster_id: str, killed_ec2_id: str, budget: int) -> tuple[bool, str | None, float]:
+    """Poll EMR until a new CORE instance appears (killed one is gone + N total CORE ≥ before)."""
+    start = time.time()
+    deadline = start + budget
+    while time.time() < deadline:
+        time.sleep(15)  # EMR's instance reconciliation isn't fast — 15s polls
+        try:
+            current = list_core_instances(cluster_id)
+        except subprocess.CalledProcessError:
+            continue
+        ids = {c["Id"] for c in current}
+        if killed_ec2_id not in ids and len(current) >= 1:
+            # The killed instance is gone AND at least one CORE is back up.
+            # Pick a new ID for the event record.
+            new_id = sorted(ids)[0] if ids else None
+            return True, new_id, time.time() - start
+    return False, None, time.time() - start
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--via", choices=["ssh", "ec2-terminate"], default="ec2-terminate",
+        help="Kill mechanism. ssh = yarn container -signal via SSH (fragile under load). "
+             "ec2-terminate = terminate one CORE EC2 instance via API (resilient).",
+    )
+    parser.add_argument(
         "--app-name",
         default="silver_sensor_streaming",
-        help="Substring of the YARN application name to target",
+        help="(ssh mode only) substring of the YARN application name to target",
     )
     parser.add_argument(
         "--recovery-budget-seconds",
         type=int,
-        default=60,
+        default=300,  # EC2 replacement on EMR takes 2-4 min in practice
         help="Maximum recovery time before the drill is considered failed",
     )
     parser.add_argument(
         "--ssh-key",
         default=str(Path.home() / ".ssh" / "pulsetrack-emr.pem"),
-        help="Path to the EMR master SSH key",
+        help="Path to the EMR master SSH key (ssh mode only)",
     )
-    parser.add_argument(
-        "--host",
-        default=None,
-        help="EMR master DNS (auto-detected from terraform output if omitted)",
-    )
+    parser.add_argument("--host", default=None, help="EMR master DNS (ssh mode)")
+    parser.add_argument("--cluster-id", default=None, help="EMR cluster ID (auto-detect)")
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -222,13 +278,72 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    started = datetime.now(timezone.utc)
+
+    if args.via == "ec2-terminate":
+        # ── EC2-API path (resilient): pick a CORE node, terminate it.
+        cluster_id = args.cluster_id or get_cluster_id()
+        print(f"[chaos-1] mode=ec2-terminate cluster={cluster_id}")
+        try:
+            cores = list_core_instances(cluster_id)
+            if not cores:
+                print(f"[chaos-1] FATAL: no RUNNING CORE instances", file=sys.stderr)
+                return 2
+            target_ec2 = cores[0]
+            print(f"[chaos-1] Will terminate CORE {target_ec2['Id']} (ip={target_ec2.get('Ip')}); "
+                  f"cluster has {len(cores)} CORE total")
+        except subprocess.CalledProcessError as e:
+            print(f"[chaos-1] FATAL discovery: {e}", file=sys.stderr)
+            return 2
+
+        if args.dry_run:
+            print("[chaos-1] Dry run — would terminate but skipping.")
+            return 0
+
+        kill_ts = datetime.now(timezone.utc)
+        print(f"[chaos-1] {kill_ts.isoformat()} Terminating {target_ec2['Id']}")
+        try:
+            terminate_ec2(target_ec2["Id"])
+        except subprocess.CalledProcessError as e:
+            print(f"[chaos-1] FATAL terminate: {e}", file=sys.stderr)
+            return 2
+
+        print(f"[chaos-1] Waiting for replacement CORE (budget={args.recovery_budget_seconds}s)...")
+        success, new_id, elapsed = wait_for_core_replacement(
+            cluster_id, target_ec2["Id"], args.recovery_budget_seconds
+        )
+        ended = datetime.now(timezone.utc)
+
+        if success:
+            print(f"[chaos-1] PASS replacement appeared in {elapsed:.1f}s → {new_id}")
+        else:
+            print(f"[chaos-1] FAIL no replacement within budget ({elapsed:.1f}s)")
+
+        record_event(
+            drill="kill_spark_task_via_ec2",
+            started=kill_ts,
+            ended=ended,
+            killed_id=target_ec2["Id"],
+            new_id=new_id,
+            success=success,
+            recovery_seconds=elapsed,
+            extra={
+                "via": "ec2-terminate",
+                "cluster_id": cluster_id,
+                "killed_ip": target_ec2.get("Ip"),
+                "budget_seconds": args.recovery_budget_seconds,
+                "cluster_core_count_before": len(cores),
+            },
+        )
+        return 0 if success else 1
+
+    # ── Legacy SSH path (preserved for completeness). ──────────────────
     host = args.host or get_emr_master_dns()
     if not host:
         print("FATAL: Could not resolve EMR master DNS", file=sys.stderr)
         return 2
 
-    print(f"[chaos-1] Target: app_name~='{args.app_name}' host={host}")
-    started = datetime.now(timezone.utc)
+    print(f"[chaos-1] mode=ssh app_name~='{args.app_name}' host={host}")
 
     try:
         app_id = find_app_id(args.app_name, args.ssh_key, host)
@@ -275,6 +390,7 @@ def main() -> int:
         success=success,
         recovery_seconds=elapsed,
         extra={
+            "via": "ssh",
             "app_id": app_id,
             "app_name_pattern": args.app_name,
             "host": host,

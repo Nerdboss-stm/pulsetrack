@@ -47,8 +47,13 @@ class Settings(BaseSettings):
     hapi_fhir_base_url: str = "https://hapi.fhir.org/baseR4"
 
     # ── Streaming tunables ──────────────────────────────────────────────
-    trigger_interval: str = "30 seconds"
-    max_offsets_per_trigger: int = 10000
+    # Tuned 2026-05-12 after the prior 10M run showed only 5.7% bronze drain:
+    #   - 30s × 10k offsets = ~333 rec/s ceiling vs 28k rec/s producer rate.
+    #   - 5s × 100k offsets = ~20k rec/s ceiling (60× higher) → drain in <10 min.
+    # See postmortem 2026-05-11 / scale_test_results.md §6 ("producer
+    # throughput ≠ bronze throughput").
+    trigger_interval: str = "5 seconds"
+    max_offsets_per_trigger: int = 100000
     watermark_delay: str = "10 minutes"
 
     # ── Quality thresholds ──────────────────────────────────────────────

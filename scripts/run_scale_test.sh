@@ -318,6 +318,18 @@ log_step "T-15m Start streaming bronze (sensor)"
 STEP_BRONZE=$(submit_spark_step "scale-test-bronze-sensor" "streaming/bronze_ingestion.py" "--trigger processing --format iceberg")
 echo "  bronze_step_id=$STEP_BRONZE"
 
+# Schema evolution gate — runs ALTER TABLE ADD COLUMN IF NOT EXISTS for
+# kafka_timestamp + silver_write_ts on the silver Iceberg table before
+# the silver stream starts. Idempotent: no-op on fresh tables.
+# Without this, silver-streaming writes to an old-schema Iceberg table
+# silently dropped the new e2e-latency columns; see scale_test_results.md.
+log_step "T-14.5m Evolve silver schema (add kafka_timestamp + silver_write_ts)"
+STEP_SILVER_EVOLVE=$(submit_spark_step "scale-test-silver-schema-evolve" "scripts/evolve_silver_schema.py" "")
+echo "  silver_evolve_step_id=$STEP_SILVER_EVOLVE"
+# Wait for evolve step to complete before starting silver stream — schema
+# changes must commit before stream restarts.
+sleep 60
+
 log_step "T-14m Start streaming silver (sensor)"
 # silver: --mode streaming (default) + --format iceberg
 STEP_SILVER=$(submit_spark_step "scale-test-silver-sensor" "transformations/bronze_to_silver/sensor_silver.py" "--mode streaming --format iceberg")
@@ -494,22 +506,28 @@ else
 fi
 
 # ── Phase 7+8: Chaos drills (skipped in smoke mode) ──────────────────────
+# Both drills use AWS-API paths (--via ec2-terminate / --via emr-api) instead
+# of SSH-to-master + yarn-cli. The SSH path saturated under load in the
+# 2026-05-11 run (10 concurrent YARN apps exhausted master sshd slots).
+# See scale_test_results.md §8 for the "operational tooling fails before
+# the data plane fails" finding.
 if [[ "$SMOKE_MODE" -eq 0 ]]; then
-    log_step "T+15m Chaos drill 1 — kill ONE silver executor"
+    log_step "T+15m Chaos drill 1 — terminate ONE CORE EC2 node (EC2-API path)"
     python3 scripts/chaos/kill_spark_task.py \
-        --app-name "silver_sensor_streaming" \
-        --recovery-budget-seconds 60 \
-        --host "$MASTER_DNS" || \
+        --via ec2-terminate \
+        --cluster-id "$CLUSTER_ID" \
+        --recovery-budget-seconds 300 || \
         echo "  WARN: drill 1 failed — postmortem will capture details"
 
     sleep 600  # 10 min recovery + observation window
 
-    log_step "T+30m Chaos drill 2 — kill ENTIRE silver streaming app"
+    log_step "T+30m Chaos drill 2 — interrupt silver streaming step (EMR-API path)"
     python3 scripts/chaos/kill_spark_app.py \
-        --app-name "silver_sensor_streaming" \
+        --via emr-api \
+        --cluster-id "$CLUSTER_ID" \
+        --step-pattern "silver" \
         --step-script "transformations/bronze_to_silver/sensor_silver.py" \
-        --recovery-budget-seconds 300 \
-        --host "$MASTER_DNS" || \
+        --recovery-budget-seconds 300 || \
         echo "  WARN: drill 2 failed — postmortem will capture details"
 
     sleep 600  # full app-level recovery window
@@ -522,11 +540,18 @@ log_step "T+45m Stop producers + drain streams"
 # nohup'd producers — SIGTERM by name. batch_scale_producer + WHOOP poller
 # + openfda poller are long-running; fhir_producer is single-shot and may
 # already be gone (pkill -f returns 1 for "no matches", we ignore via || true).
+#
+# CRITICAL: the outer `|| true` is at the LOCAL bash level — the `|| true`
+# inside the SSH command runs on the REMOTE shell and does not catch SSH's
+# own exit code (255 = connection failed / timed out under load). This was
+# the root cause of the orchestrator abort at this line in both prior runs;
+# see scale_test_results.md + execution_log for the rc=255 traces.
 $SSH "pkill -TERM -f batch_scale_producer || true; \
       pkill -TERM -f 'whoop_api.producer' || true; \
       pkill -TERM -f openfda_producer || true; \
       pkill -TERM -f fhir_producer || true; \
-      echo 'producer stop signals sent'"
+      echo 'producer stop signals sent'" || \
+    echo "  WARN: SSH pkill returned non-zero (continuing — producers may still drain)"
 
 echo "  Waiting 5 min for streams to drain (lag → 0)..."
 sleep 300
