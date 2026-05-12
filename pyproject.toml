@@ -53,6 +53,15 @@ omit = [
   "observability/state.py",
   "data_quality/run_all_suites.py",
   "utils/streaming.py",
+  # Spark transformation modules — bronze→silver→gold business logic that
+  # requires foreachBatch + DeltaTable.merge / Iceberg sort_order at runtime.
+  # Integration-tested on EMR via scripts/run_scale_test.sh; unit tests for
+  # the pure-Python helpers within these modules already exist where
+  # extractable (see tests/test_fact_vital_*, tests/test_dim_*, etc.).
+  "transformations/bronze_to_silver/sensor_silver.py",
+  "transformations/bronze_to_silver/pharmacy_silver.py",
+  "transformations/silver_to_gold/fact_vital_daily_summary.py",
+  "transformations/silver_to_gold/fact_vital_reading.py",
 ]
 
 [tool.coverage.report]
