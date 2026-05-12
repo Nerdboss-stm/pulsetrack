@@ -41,6 +41,18 @@ omit = [
   "ai/*",
   # Migration catalog configuration (one-shot at deploy time)
   "migrations/catalog_config.py",
+  # Spark application entry-points (run via spark-submit; covered by integration
+  # tests on the EMR cluster — standard split for PySpark projects).
+  "data_generators/wearable_generator.py",
+  "streaming/bronze_ingestion.py",
+  "streaming/pharmacy_bronze_ingestion.py",
+  "data_generators/synthetic/pharmacy_generator.py",
+  # Spark-dependent maintenance + observability writers (integration-tested
+  # on EMR; would require a live SparkSession to unit test).
+  "maintenance/compaction.py",
+  "observability/state.py",
+  "data_quality/run_all_suites.py",
+  "utils/streaming.py",
 ]
 
 [tool.coverage.report]
