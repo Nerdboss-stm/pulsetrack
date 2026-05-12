@@ -1,15 +1,40 @@
-# PulseTrack
+# PulseTrack — IoT Health Telemetry Platform (Kappa Architecture)
 
-> Wearable health analytics platform — physiological vitals, FHIR clinical
-> data, and FDA pharmacy events flowing through a Kappa-architecture
-> lakehouse on Delta Lake.
+> Real-WHOOP-device + 50K-simulated-patient streaming lakehouse on AWS:
+> Kafka MSK + Avro + Schema Registry → Spark/EMR → Iceberg on S3 (Glue) →
+> Snowflake + dbt + Prefect. Production patterns: DLQ, GX gates,
+> Prometheus + Grafana, Glacierbase-style migrations, Terraform IaC.
 
 ![Architecture](https://img.shields.io/badge/Architecture-Kappa-blue)
-![Compute](https://img.shields.io/badge/Compute-Spark%203.5-E25A1C)
-![Storage](https://img.shields.io/badge/Storage-Delta%203.0-00ADD8)
-![Schema](https://img.shields.io/badge/Schema-Avro%20%2B%20SR-orange)
-![Quality](https://img.shields.io/badge/Quality-GX%201.x-purple)
+![Compute](https://img.shields.io/badge/Compute-Spark%203.5%20on%20EMR-E25A1C)
+![Storage](https://img.shields.io/badge/Storage-Apache%20Iceberg-1f72f5)
+![Catalog](https://img.shields.io/badge/Catalog-AWS%20Glue-FF9900)
+![Warehouse](https://img.shields.io/badge/Warehouse-Snowflake-29B5E8)
+![Orchestrator](https://img.shields.io/badge/Orchestrator-Prefect%20Cloud-0052CC)
+![Schema](https://img.shields.io/badge/Schema-Avro%20%2B%20Glue%20SR-orange)
+![dbt](https://img.shields.io/badge/dbt-38%20models%20%2F%20220%20tests-FF694B)
+![Tests](https://img.shields.io/badge/pytest-370%20tests%20%2F%2077%25-3776AB)
+![IaC](https://img.shields.io/badge/IaC-Terraform-844fba)
+
 [![CI](https://github.com/Nerdboss-stm/pulsetrack/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Nerdboss-stm/pulsetrack/actions/workflows/ci.yml)
+[![Migrations](https://github.com/Nerdboss-stm/pulsetrack/actions/workflows/migration-check.yml/badge.svg)](https://github.com/Nerdboss-stm/pulsetrack/actions/workflows/migration-check.yml)
+[![dbt CI](https://github.com/Nerdboss-stm/pulsetrack/actions/workflows/dbt_ci.yml/badge.svg)](https://github.com/Nerdboss-stm/pulsetrack/actions/workflows/dbt_ci.yml)
+
+---
+
+## For reviewers — quick map
+
+This project ships **21 Iceberg tables** across Bronze/Silver/Gold + **38 dbt models** + **370 pytest tests at 77% coverage** + real WHOOP-data ingestion + a public-cloud EMR pipeline that runs 10M-event scale tests on real MSK + EMR. Two highest-signal artifacts to look at first:
+
+1. **[`docs/scale_test_results.md`](docs/scale_test_results.md)** — honest scoping of what runs at 10M scale, with real Iceberg+S3 numbers and the gaps documented (senior-DE artifact).
+2. **[`postmortems/`](postmortems/)** — 9 postmortems including the SEV2 credential-leak from this project's own commit history.
+
+Notable depth signals:
+- [`migrations/`](migrations/) — Glacierbase-style with CI/CD auto-apply ([workflow](.github/workflows/migration-check.yml))
+- [`docs/s3_partitioning_analysis.md`](docs/s3_partitioning_analysis.md) — reversed-ID partitioning benchmarked against date-first and hash-bucket on real S3 ([results](benchmarks/results/))
+- [`schemas/glue_registry.py`](schemas/glue_registry.py) — Glue SR wire-format handler with magic-byte dispatch between Confluent (local) and Glue (cloud)
+- [`docs/adrs/`](docs/adrs/) — 8 ADRs documenting platform decisions (Iceberg-over-Delta, EMR-over-Databricks, Avro wire format, table format by cluster size, streaming vs batch per layer)
+- [`pulsetrack-study/PROMPT_9_REPORT.md`](pulsetrack-study/) — exhaustive technical writeup (local artifact)
 
 ---
 
